@@ -1,8 +1,10 @@
 [project]
-name = "vet-database"
+name = "vetriever"
 version = "0.1.0"
 description = "Builds a cited database of veterinary clinical studies from the published literature."
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.12"
 dependencies = [
     "google-genai>=2.33.0",
@@ -20,7 +22,7 @@ dev = [
 ]
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]   # 1.27 is the first to read license = "MIT"
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]

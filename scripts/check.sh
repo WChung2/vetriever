@@ -22,7 +22,7 @@ uv run --no-sync vet templates --check
 step "5/5 nothing secret or private in the files git would publish"
 # the files a 'git add -A' would include: tracked + new, minus .gitignore'd
 files=$(git ls-files --cached --others --exclude-standard)
-private=$(printf '%s\n' "$files" | grep -E '(^|/)\.env$|^corpus/(docs|calls)/' || true)
+private=$(printf '%s\n' "$files" | grep -E '(^|/)\.env$|^corpus/' || true)
 [ -z "$private" ] || fail "private files would be published (keep them git-ignored):
 $private"
 google_keys=$(git grep --untracked -lE 'AIza[0-9A-Za-z_-]{35}' || true)

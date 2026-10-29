@@ -7,11 +7,8 @@ __pycache__/
 *.pyc
 .pytest_cache/
 
-# Full texts stay on this computer: paywalled papers may not be shared.
-# Open-access and public-domain texts can be shared later, deliberately.
-corpus/docs/
-
-# Saved model calls contain document text
-corpus/calls/
+# Everything a run produces stays on this computer: the data is not published, and
+# corpus/docs/ holds paywalled full texts that may not be shared.
+corpus/
 
 .DS_Store

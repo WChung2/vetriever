@@ -44,7 +44,7 @@ class Record:
 class Http:
     def __init__(self, client: httpx.Client | None = None):
         email = env("CONTACT_EMAIL")
-        agent = "vet-database/0.1 (open research project" + (f"; mailto:{email}" if email else "") + ")"
+        agent = "vetriever/0.1 (open research project" + (f"; mailto:{email}" if email else "") + ")"
         self.client = client or httpx.Client(headers={"User-Agent": agent}, timeout=30,
                                              follow_redirects=True)
         self.last: dict[str, float] = {}
@@ -79,7 +79,7 @@ def log_search(service: str, query: str, hits: int, returned: int):
 # ---- PubMed (NCBI E-utilities) -----------------------------------------------------------
 
 def _ncbi(http: Http, endpoint: str, **params) -> httpx.Response:
-    params |= {"tool": "vet-database"}
+    params |= {"tool": "vetriever"}
     if env("CONTACT_EMAIL"):
         params["email"] = env("CONTACT_EMAIL")
     if env("NCBI_API_KEY"):
@@ -149,7 +149,7 @@ def pubmed_similar(http: Http, pmid: str, limit: int = 20) -> list[str]:
 
 def convert_ids(http: Http, ids: list[str]) -> dict[str, dict]:
     """PMID / PMCID / DOI → all three (PubMed Central ID converter)."""
-    params = {"ids": ",".join(ids), "format": "json", "tool": "vet-database"}
+    params = {"ids": ",".join(ids), "format": "json", "tool": "vetriever"}
     if env("CONTACT_EMAIL"):
         params["email"] = env("CONTACT_EMAIL")
     recs = http.get(IDCONV, params, gap=0.34).json().get("records", [])

@@ -1,7 +1,8 @@
-# vet_database
+# Vetriever
 
-Builds a cited database of veterinary clinical studies (first track: post-surgical pain in
-dogs) from the published literature. Agents search and read; code checks every value. Each
+Builds a cited database of clinical studies in animal patients (veterinary medicine,
+not lab-animal research) from the published literature. First track: post-surgical pain in
+dogs. Agents search and read; code checks every value. Each
 value in the tables comes with a verbatim quote from its source document.
 
 Status: **Phase 0 (setup) done.** The codebook, the empty tables, the checker, the
@@ -56,8 +57,8 @@ machine (Python 3.12 and 3.13) for every push and pull request:
 2. lint (`ruff`);
 3. tests, with the network blocked so no test can call a real service;
 4. `templates/` and `codebook.md` match `codebook.csv`;
-5. nothing private would be published: no `.env`, no full texts or saved model calls, no
-   Google-style API key, and none of the values in your own `.env`.
+5. nothing private would be published: no `.env`, nothing from `corpus/`, no Google-style
+   API key, and none of the values in your own `.env`.
 
 ## Sources and safety
 
@@ -69,6 +70,12 @@ spending cap in `settings.toml`, and every call can be audited in `corpus/calls/
 
 ## What is shared and what stays local
 
-The code, the codebook and the extracted tables (facts plus short quotes) can be shared.
-Full texts stay in `corpus/docs/`, which git ignores, because paywalled papers may not be
+The repository holds the code, the codebook, the empty templates and the track briefs.
+Everything a run produces stays in `corpus/`, which git ignores: the database itself is not
+published, and the full texts in `corpus/docs/` include paywalled papers that may not be
 redistributed. API keys go in `.env`, which git also ignores.
+
+## Licence
+
+The code is under the MIT licence (see `LICENSE`). The data the pipeline builds is not part
+of this repository.

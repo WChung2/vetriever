@@ -1,0 +1,135 @@
+# Topic brief: canine post-surgical pain. DRAFT for you to correct.
+# The Search agent screens records against [screen]. The Review agent improves [terms]
+# round by round and checks coverage against [targets], until a round finds nothing new.
+# [[fields]] at the end: what to extract for this topic on top of the core codebook.
+
+question ="""Canine post-surgical pain control, any type of surgery. Evidence to design a dose
+range-finding study of a new analgesic: efficacy and safety endpoints, pain scales, rescue
+analgesia rules, dose selection, eligibility criteria, sample sizes."""
+
+[screen]
+# Studies in animals are scarce, so screening keeps anything that might help and drops only
+# records that are clearly off topic. Kept records get flags; at the approval step you choose
+# which flags to leave out. Nothing is deleted: every decision is saved with its reason.
+off_topic = [
+  "No dogs: other species only",
+  "Not about pain, analgesia, or analgesic or anaesthetic drugs (e.g. surgical technique, infection or tumour outcomes only)",
+]
+flags = [
+  "pk_only: drug levels or pharmacology, no pain outcome",
+  "no_surgery: dogs not undergoing surgery (e.g. healthy research dogs, other procedures)",
+  "chronic_pain: chronic pain such as osteoarthritis",
+  "no_pain_outcome: anaesthesia or sedation study where pain or analgesia is not measured",
+  "experimental: induced pain or injury model in research dogs",
+  "single_case: a report of one dog",
+  "mixed_species: dogs with other species; dog results may not be reported separately",
+  "no_abstract: decided on the title only",
+]
+years = "any"
+languages = "any"        # verbatim quotes stay in the original language
+
+[targets]   # the Review agent searches again where these are thin
+drug_classes = [
+  "NSAIDs (carprofen, meloxicam, robenacoxib, firocoxib, deracoxib)",
+  "opioids (methadone, buprenorphine, hydromorphone, morphine, fentanyl, butorphanol, tramadol)",
+  "local anaesthetics and blocks (bupivacaine incl. liposomal, ropivacaine, lidocaine)",
+  "alpha-2 agonists (dexmedetomidine, medetomidine)",
+  "NMDA antagonists (ketamine, amantadine)",
+  "gabapentinoids (gabapentin, pregabalin)",
+  "others (paracetamol/acetaminophen, maropitant, grapiprant)",
+]
+surgery_types = ["ovariohysterectomy / ovariectomy", "castration", "orthopaedic (e.g. TPLO, cruciate)",
+                 "dental extraction", "ophthalmic", "neurologic (e.g. hemilaminectomy)",
+                 "other soft tissue (mastectomy, laparotomy)"]
+designs = ["dose-ranging or several doses of one drug (priority)", "placebo-controlled",
+           "active-controlled / non-inferiority", "regulatory field effectiveness studies"]
+# Leads only, from memory: the pipeline must find each product's FDA FOI summary and EMA
+# page itself and copy identifiers from there, never from this list.
+regulatory_leads = ["Rimadyl (carprofen)", "Metacam (meloxicam)", "Onsior (robenacoxib)",
+                    "Previcox (firocoxib)", "Deramaxx (deracoxib)",
+                    "Nocita (bupivacaine liposome)", "Recuvyra (transdermal fentanyl)"]
+
+# The starting search: OR inside a block, AND between blocks. Code writes each service's
+# query from these, and the Review agent adds and removes terms each round. The table as it
+# grows is saved in corpus/search_terms.csv. Measured on PubMed on 2026-10-29: 3,327 hits.
+# "Postoperative Pain" sits in both pain and surgery so it is enough on its own.
+[terms.species]
+mesh = ["Dogs"]
+text = ["dog", "dogs", "canine", "bitch*", "puppies"]
+
+[terms.pain]
+mesh = ["Postoperative Pain", "Pain", "Pain Measurement", "Analgesics"]
+text = ["pain", "analges*"]
+
+[terms.surgery]
+mesh = ["Postoperative Pain", "Surgical Procedures, Operative"]
+text = ["postoperative", "post-operative", "perioperative", "surgery", "surgical",
+        "ovariohysterectomy", "ovariectomy", "castration", "orchiectomy",
+        "tibial plateau leveling osteotomy", "TPLO", "laparotomy", "mastectomy",
+        "hemilaminectomy", "dental extraction", "tooth extraction", "enucleation"]
+
+[extra_queries]   # searches the term table can't express; tested live on 2026-10-28
+europepmc = [
+  '(dog OR dogs OR canine) AND ("postoperative pain" OR "post-operative pain" OR "postoperative analgesia") AND NOT SRC:MED',
+  'BODY:"dose-ranging" AND (dog OR canine) AND (postoperative OR surgery) AND OPEN_ACCESS:Y',
+]
+# OpenAlex ranks by relevance and counts anything loosely related (thousands of hits);
+# only the top-ranked results of each query are screened.
+openalex = ["dog postoperative analgesia dose", "canine postoperative pain randomized"]
+
+[known]
+# Studies you already know belong in the database (PMIDs). Every round checks that the
+# search still finds them; any it misses shows a missing term. Optional but very useful.
+pmids = []
+
+# Extra fields for this topic, on top of the core codebook; same columns as codebook.csv.
+# Stored one value per row in topic_fields.
+[[fields]]
+field = "surgery_types"
+kind = "T"
+type = "pipe_list"
+description = "Surgeries as written."
+
+[[fields]]
+field = "surgery_category"
+kind = "C"
+type = "enum"
+allowed_values = "soft_tissue|orthopedic|dental|neurologic|ophthalmic|mixed"
+rule = "mixed = more than one category in the study."
+evidence = "quote"
+description = "Surgery category."
+
+[[fields]]
+field = "anesthesia_protocol"
+kind = "T"
+type = "text"
+evidence = "location"
+description = "Anaesthesia protocol, verbatim."
+
+[[fields]]
+field = "premedication"
+kind = "T"
+type = "text"
+evidence = "location"
+description = "Premedication, verbatim."
+
+[[fields]]
+field = "pain_assessment_times"
+kind = "T"
+type = "text"
+evidence = "location"
+description = "When pain was scored, verbatim."
+
+[[fields]]
+field = "rescue_threshold"
+kind = "T"
+type = "text"
+evidence = "location"
+description = "Score that triggers rescue analgesia, verbatim."
+
+[[fields]]
+field = "multimodal_cointerventions"
+kind = "T"
+type = "text"
+evidence = "location"
+description = "Analgesics given to all arms alongside the test treatment, verbatim."

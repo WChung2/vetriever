@@ -1,0 +1,60 @@
+# Topic brief: chronic inflammatory enteropathy (CIE) in dogs. DRAFT: only the question and the
+# extra fields so far; the Planner (stage 2) drafts the search sections.
+
+question = """Glucocorticoid treatment of chronic inflammatory enteropathy in dogs: remission by
+timepoint, days to remission, escalation to another immunosuppressant, steroid dose over time
+and stopping, and when treatment started for dogs already treated at entry."""
+
+# Extra fields for this topic, on top of the core codebook; same columns as codebook.csv.
+[[fields]]
+field = "ce_subtype"
+kind = "C"
+type = "enum"
+allowed_values = "FRE|ARE|IRE|NRE|mixed|unclassified"
+rule = "FRE food-, ARE antibiotic-, IRE immunosuppressant-responsive, NRE non-responsive; mixed = several; unclassified = not classified."
+evidence = "quote"
+description = "Chronic enteropathy subtype by treatment response."
+
+[[fields]]
+field = "glucocorticoid_protocol"
+kind = "T"
+type = "text"
+evidence = "location"
+description = "Starting dose and taper, verbatim."
+
+[[fields]]
+field = "concurrent_diet"
+kind = "T"
+type = "text"
+evidence = "location"
+description = "Diet given alongside glucocorticoids, verbatim."
+
+[[fields]]
+field = "prior_diet_trial"
+kind = "T"
+type = "text"
+evidence = "location"
+description = "Diet trial before entry, verbatim."
+
+[[fields]]
+field = "prior_antibiotic_trial"
+kind = "T"
+type = "text"
+evidence = "location"
+description = "Antibiotic trial before entry, verbatim."
+
+[[fields]]
+field = "follow_up_as_written"
+kind = "T"
+type = "text"
+evidence = "location"
+description = "Follow-up, verbatim."
+
+[[fields]]
+field = "user_type"
+kind = "C"
+type = "enum"
+allowed_values = "new_users|prevalent_users|mixed|unclear"
+rule = "new_users = enter at the start of glucocorticoid treatment; prevalent_users = already on treatment at entry."
+evidence = "quote"
+description = "Treatment status at entry."

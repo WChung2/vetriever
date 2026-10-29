@@ -1,0 +1,43 @@
+# Topic brief: immune-mediated haemolytic anaemia (IMHA) in dogs. DRAFT: only the question and
+# the extra fields so far; the Planner (stage 2) drafts the search sections.
+
+question = """Treatment of immune-mediated haemolytic anaemia in dogs: immunosuppressive and
+antithrombotic protocols, transfusion, survival and relapse."""
+
+# Extra fields for this topic, on top of the core codebook; same columns as codebook.csv.
+[[fields]]
+field = "imha_classification"
+kind = "C"
+type = "enum"
+allowed_values = "non_associative|associative|mixed|unspecified"
+rule = "non_associative = primary/idiopathic; associative = secondary to a stated cause."
+evidence = "quote"
+description = "IMHA classification."
+
+[[fields]]
+field = "immunosuppressive_protocol"
+kind = "T"
+type = "text"
+evidence = "location"
+description = "Immunosuppressive protocol, verbatim."
+
+[[fields]]
+field = "antithrombotic_protocol"
+kind = "T"
+type = "text"
+evidence = "location"
+description = "Antithrombotic protocol, verbatim."
+
+[[fields]]
+field = "transfusion_trigger"
+kind = "T"
+type = "text"
+evidence = "location"
+description = "What triggers a transfusion, verbatim."
+
+[[fields]]
+field = "entry_pcv"
+kind = "T"
+type = "text"
+evidence = "location"
+description = "PCV at entry, verbatim."

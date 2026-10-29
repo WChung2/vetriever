@@ -5,8 +5,8 @@ import tempfile
 from collections import Counter
 from pathlib import Path
 
-from .codebook import Codebook, write_markdown, write_templates
-from .settings import CORPUS, ROOT
+from .codebook import TABLES, Codebook, write_markdown, write_templates
+from .settings import CORPUS, DB, ROOT
 from .validate import load_folder, validate, write_report
 
 
@@ -15,7 +15,7 @@ def cmd_templates(args):
     if not args.check:
         write_templates(cb)
         write_markdown(cb)
-        print("wrote templates/ (14 tables) and codebook.md")
+        print(f"wrote templates/ ({len(TABLES)} tables) and codebook.md")
         return
     with tempfile.TemporaryDirectory() as tmp:
         fresh = Path(tmp)
@@ -33,16 +33,30 @@ def cmd_templates(args):
 
 
 def cmd_check(args):
-    folder = Path(args.folder).resolve()
-    if not folder.is_dir():
-        sys.exit(f"no such folder: {folder}")
-    source_id = folder.name if folder.parent.name == "out" else None
-    tables, headers = load_folder(folder, CORPUS)
+    if args.folder:
+        folder = Path(args.folder).resolve()
+        if not folder.is_dir():
+            sys.exit(f"no such folder: {folder}")
+        source_id = folder.name if folder.parent.name == "out" else None
+        tables, headers = load_folder(folder, CORPUS)
+        reports, name = CORPUS / "reports", source_id or folder.name
+        scope = f"document {source_id}" if source_id else f"folder {folder.name}"
+    else:
+        from .duplicates import possible_duplicates
+        from .store import Store
+        store = Store(args.db)
+        tables, headers, source_id = store.tables(), None, None
+        reports, name, scope = args.db.parent / "reports", "database", str(args.db)
+        review = possible_duplicates(tables)
+        write_report(review, reports / "duplicates_to_review.csv")
+        print(f"to review: {len(review)} possible duplicates; list in "
+              f"{reports / 'duplicates_to_review.csv'}")
+        for check, n in Counter(i.check for i in review).most_common():
+            print(f"  {n:5d}  {check}")
     issues = validate(tables, Codebook(), source_id=source_id, headers=headers)
-    report = CORPUS / "reports" / f"check_{source_id or folder.name}.csv"
+    report = reports / f"check_{name}.csv"
     write_report(issues, report)
     rows = sum(len(v) for v in tables.values())
-    scope = f"document {source_id}" if source_id else "merged set"
     if not issues:
         print(f"OK: {rows} rows checked ({scope}), no problems")
         return
@@ -50,6 +64,40 @@ def cmd_check(args):
     for check, n in Counter(i.check for i in issues).most_common():
         print(f"  {n:5d}  {check}")
     sys.exit(1)
+
+
+def cmd_import(args):
+    from .store import Store
+    store = Store(args.db)
+    try:
+        rep = store.import_folder(Path(args.folder))
+    except ValueError as e:
+        sys.exit(str(e))
+    ids = list(rep.new_studies.values())
+    print(f"imported {args.folder} into {args.db}")
+    print(f"  documents: {len(rep.new_documents)} new, {len(rep.known_documents)} already "
+          "stored (skipped with their studies)")
+    print(f"  studies:   {len(ids)} new" + (f" ({ids[0]} to {ids[-1]})" if ids else "")
+          + (f"; {len(rep.topic_from_document)} got their topic from their document"
+             if rep.topic_from_document and ids else ""))
+    print(f"  {'table':14s} {'in':>6s} {'added':>6s} {'skipped':>8s}")
+    for t in TABLES:
+        if rep.rows_in[t]:
+            print(f"  {t:14s} {rep.rows_in[t]:6d} {rep.rows_added[t]:6d} {rep.rows_skipped[t]:8d}")
+    for (table, column), n in sorted(rep.dropped.items()):
+        print(f"  dropped: {table}.{column} ({n} filled cells): not in the codebook")
+    print(f"  values: {rep.values_in} in = {rep.values_stored} stored + {rep.values_skipped} "
+          f"skipped + {rep.values_dropped} dropped")
+    if rep.missing:
+        sys.exit(f"MISSING: {sum(rep.missing.values())} values did not arrive, e.g. "
+                 f"{list(rep.missing)[:3]}")
+    print("  every value accounted for")
+
+
+def cmd_export(args):
+    from .store import Store
+    n = Store(args.db).export(Path(args.folder))
+    print(f"wrote {n} rows in {len(TABLES)} tables to {args.folder}")
 
 
 def cmd_ping(_args):
@@ -100,15 +148,22 @@ def cmd_ping(_args):
 
 def main(argv=None):
     p = argparse.ArgumentParser(prog="vet", description="Veterinary study database pipeline.")
+    p.add_argument("--db", type=Path, default=DB, help=f"the database file (default {DB})")
     sub = p.add_subparsers(dest="command", required=True)
     t = sub.add_parser("templates", help="write templates/ and codebook.md from codebook.csv")
     t.add_argument("--check", action="store_true",
                    help="only check they are up to date (CI); change nothing")
     t.set_defaults(run=cmd_templates)
-    c = sub.add_parser("check", help="check a folder of tables against the codebook")
-    c.add_argument("folder", nargs="?", default=str(CORPUS / "merged"),
-                   help="corpus/merged (default) or corpus/out/<source_id>")
+    c = sub.add_parser("check", help="check the database (or a folder) against the codebook")
+    c.add_argument("folder", nargs="?", help="a folder of tables, e.g. corpus/out/<source_id>; "
+                   "default: the database, plus a list of possible duplicates to review")
     c.set_defaults(run=cmd_check)
+    i = sub.add_parser("import", help="add a folder of tables to the database")
+    i.add_argument("folder")
+    i.set_defaults(run=cmd_import)
+    e = sub.add_parser("export", help="write the database out as CSV tables")
+    e.add_argument("folder", nargs="?", default=str(CORPUS / "merged"))
+    e.set_defaults(run=cmd_export)
     sub.add_parser("ping", help="one tiny live call per literature service"
                    ).set_defaults(run=cmd_ping)
     args = p.parse_args(argv)

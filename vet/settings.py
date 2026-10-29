@@ -6,7 +6,8 @@ from functools import cache
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-CORPUS = ROOT / "corpus"          # docs/, sources.csv, study_sources.csv, out/, merged/, reports/
+CORPUS = ROOT / "corpus"          # docs/, out/, merged/, reports/ and the database
+DB = CORPUS / "vetriever.db"
 
 
 @cache

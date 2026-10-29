@@ -22,9 +22,14 @@ uv run --no-sync vet templates --check
 step "5/5 nothing secret or private in the files git would publish"
 # the files a 'git add -A' would include: tracked + new, minus .gitignore'd
 files=$(git ls-files --cached --others --exclude-standard)
-private=$(printf '%s\n' "$files" | grep -E '(^|/)\.env$|^corpus/' || true)
+private=$(printf '%s\n' "$files" | grep -E '(^|/)\.env$|(^|/)(corpus|examples|merged|out|reports)/' || true)
 [ -z "$private" ] || fail "private files would be published (keep them git-ignored):
 $private"
+# no data on GitHub: the only tables allowed are the codebook and the empty templates
+data=$(printf '%s\n' "$files" | grep -iE '\.(csv|tsv|db|sqlite3?|xlsx?|pdf|docx|parquet|jsonl)$' \
+       | grep -vE '^codebook\.csv$|^templates/[a-z_]+\.csv$' || true)
+[ -z "$data" ] || fail "data files would be published (only codebook.csv and templates/ may be):
+$data"
 google_keys=$(git grep --untracked -lE 'AIza[0-9A-Za-z_-]{35}' || true)
 [ -z "$google_keys" ] || fail "something that looks like a Google API key is in: $google_keys"
 if [ -f .env ]; then          # your own key values must not appear in any published file

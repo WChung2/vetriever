@@ -11,4 +11,18 @@ __pycache__/
 # corpus/docs/ holds paywalled full texts that may not be shared.
 corpus/
 
+# Outputs from other tools kept for comparison (full texts and extracted data): local only
+examples/
+
+# No data goes to GitHub, wherever it is saved: databases, spreadsheets, documents
+*.db
+*.sqlite
+*.sqlite3
+*.xlsx
+*.xls
+*.pdf
+*.docx
+*.parquet
+*.jsonl
+
 .DS_Store

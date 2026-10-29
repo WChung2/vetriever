@@ -1,7 +1,7 @@
 """Checks tables against the codebook (schema v2 section 10). Nothing is fixed silently:
 every problem becomes one Issue.
 
-    vet check corpus/merged                 # the merged set
+    vet check                               # the database
     vet check corpus/out/PMID31234567       # one document's folder
 
 A document folder holds that document's tables; sources.csv and study_sources.csv are read
@@ -13,12 +13,12 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
-from .codebook import EXT, TABLES, Codebook
+from .codebook import TABLES, Codebook
 
 SOURCE_ID = re.compile(r"(?:PMID\d+|DOI(?:-[A-Z0-9]+)+|FDA-A?NADA\d+|EMA-[A-Z0-9]+"
                        r"|REG(?:-[A-Z0-9]+){2,}|ABS(?:-[A-Z0-9]+){2,}|WEB-[A-Z0-9]+-\d{8}-\d+)"
                        r"(?:-\d+)?")
-STUDY_ID = re.compile(r"VET-(?P<src>.+)-[1-9]\d*")
+STUDY_ID = re.compile(r"VET-[1-9]\d*")
 INTEGER = re.compile(r"\d+")
 NUMBER = re.compile(r"-?\d+(?:\.\d+)?")
 YEAR = re.compile(r"\d{4}")
@@ -29,21 +29,28 @@ HEADERS = ("Inclusion Criteria:", "Exclusion Criteria:")
 QUOTE_MAX = 500
 
 PRIMARY_KEY = {"sources": ("source_id",), "study_sources": ("ID", "source_id"),
-               "studies": ("ID",), "arms": ("arm_id",), "arm_doses": ("dose_id",),
-               "results": ("result_id",), "sites": ("ID", "site_no"),
+               "studies": ("ID",), "study_topics": ("ID", "topic"),
+               "topic_fields": ("ID", "topic", "field"), "arms": ("arm_id",),
+               "arm_doses": ("dose_id",), "results": ("result_id",), "sites": ("ID", "site_no"),
                "people": ("ID", "person_no"), "breeds": ("ID", "arm_id", "Breed"),
                "definitions": ("source_id", "ID", "term"),
-               "evidence": ("ID", "table", "row_key", "field"),
-               "ext_pain": ("ID",), "ext_imha": ("ID",), "ext_cie": ("ID",)}
+               "conflicts": ("ID", "table", "row_key", "field", "secondary_source_id"),
+               # a value may have several evidence rows: one per document, or one per part
+               # of a list (e.g. a quote for each country)
+               "evidence": ("ID", "table", "row_key", "field", "source_id", "quote", "location")}
+CELL = ("ID", "table", "row_key", "field")       # the value an evidence row supports
 # key columns that may be empty: whole-cohort result, whole-study breed, person with no
-# stated site, definition from a consensus statement, evidence for a studies/ext value
+# stated site, definition from a consensus statement, evidence or conflict for a studies value
 OPTIONAL_KEYS = {("results", "arm_id"), ("results", "reference_arm_id"),
                  ("breeds", "arm_id"), ("people", "site_no"), ("definitions", "ID"),
-                 ("evidence", "row_key")}
+                 ("evidence", "row_key"), ("evidence", "quote"), ("evidence", "location"),
+                 ("conflicts", "row_key")}
 # (child, child columns, parent, parent columns, check name); skipped when a child column is empty
 LINKS = [
     ("study_sources", ("source_id",), "sources", ("source_id",), "orphan"),
     ("studies", ("ID",), "study_sources", ("ID",), "orphan"),
+    ("study_topics", ("ID",), "studies", ("ID",), "orphan"),
+    ("topic_fields", ("ID", "topic"), "study_topics", ("ID", "topic"), "orphan"),
     ("arms", ("ID",), "studies", ("ID",), "orphan"),
     ("arm_doses", ("ID", "arm_id"), "arms", ("ID", "arm_id"), "orphan"),
     ("results", ("ID",), "studies", ("ID",), "orphan"),
@@ -59,14 +66,16 @@ LINKS = [
     ("definitions", ("source_id",), "sources", ("source_id",), "orphan"),
     ("definitions", ("ID", "source_id"), "study_sources", ("ID", "source_id"), "unlinked_source"),
     ("evidence", ("ID", "source_id"), "study_sources", ("ID", "source_id"), "unlinked_source"),
-    ("ext_pain", ("ID",), "studies", ("ID",), "orphan"),
-    ("ext_imha", ("ID",), "studies", ("ID",), "orphan"),
-    ("ext_cie", ("ID",), "studies", ("ID",), "orphan"),
+    ("conflicts", ("ID",), "studies", ("ID",), "orphan"),
+    ("conflicts", ("ID", "primary_source_id"), "study_sources", ("ID", "source_id"),
+     "unlinked_source"),
+    ("conflicts", ("ID", "secondary_source_id"), "study_sources", ("ID", "source_id"),
+     "unlinked_source"),
 ]
-# tables whose values evidence rows support, and how their row_key is built
+# tables whose values evidence rows support, and how their row_key is built; topic_fields
+# rows are supported too, with row_key = the topic (see _Run.evidence)
 ROW_KEY = {"studies": (), "arms": ("arm_id",), "arm_doses": ("dose_id",), "sites": ("site_no",),
-           "people": ("person_no",), "breeds": ("arm_id", "Breed"),
-           "ext_pain": (), "ext_imha": (), "ext_cie": ()}
+           "people": ("person_no",), "breeds": ("arm_id", "Breed")}
 
 
 @dataclass(frozen=True)
@@ -115,7 +124,8 @@ class _Run:
         self.source_id = source_id
         self.issues: list[Issue] = []
         self.studies = {r.get("ID", ""): r for r in self.t["studies"]}
-        self.ext = {r.get("ID", ""): (name, r) for name in EXT.values() for r in self.t[name]}
+        self.topic_values = {_key(r, PRIMARY_KEY["topic_fields"]): r.get("value", "")
+                             for r in self.t["topic_fields"]}
 
     def add(self, check, table, i, row, field, message):
         key = "|".join(_key(row, PRIMARY_KEY[table])) if row else ""
@@ -142,10 +152,16 @@ class _Run:
     def cells(self):
         for table in TABLES:
             for f in self.cb.tables[table]:
+                if (table, f.name) == ("topic_fields", "value"):
+                    continue                  # checked against the topic's own definition
                 for i, row in self.rows(table):
                     v = row.get(f.name, "")
                     if v:
                         self.cell(table, i, row, f, v)
+        for i, row in self.rows("topic_fields"):
+            f = self.cb.topic_field(row.get("topic", ""), row.get("field", ""))
+            if f and row.get("value"):
+                self.cell("topic_fields", i, row, f, row["value"])
 
     def cell(self, table, i, row, f, v):
         add = lambda check, msg: self.add(check, table, i, row, f.name, msg)
@@ -182,10 +198,8 @@ class _Run:
         bad = ""
         if name == "source_id" and not SOURCE_ID.fullmatch(v):
             bad = "source_id does not follow the key rules"
-        elif name == "ID":
-            m = STUDY_ID.fullmatch(v)
-            if not m or not SOURCE_ID.fullmatch(m["src"]):
-                bad = "ID must be VET-<source_id>-<n>"
+        elif name == "ID" and not STUDY_ID.fullmatch(v):
+            bad = "ID must be VET-<n>"
         elif name in ("arm_id", "reference_arm_id") and not re.fullmatch(re.escape(sid) + r"-A[1-9]\d*", v):
             bad = f"{name} must be <ID>-A<n> of this row's study"
         elif name == "dose_id" and not re.fullmatch(re.escape(row.get("arm_id", "")) + r"-D[1-9]\d*", v):
@@ -227,18 +241,36 @@ class _Run:
             if len(primaries) != 1:
                 self.add("primary_count", "study_sources", i, rows[0], "role",
                          f"{len(primaries)} primary documents; exactly one needed")
-            m = STUDY_ID.fullmatch(sid)
-            if primaries and m and m["src"] != primaries[0].get("source_id"):
-                self.add("id_not_primary", "study_sources", i, rows[0], "ID",
-                         f"ID is built from {m['src']} but the primary is {primaries[0].get('source_id')}")
             if self.source_id is None and sid not in self.studies:
                 self.add("missing_study_row", "study_sources", i, rows[0], "ID",
                          "study listed in study_sources has no studies row")
-        for i, row in self.rows("studies"):
-            ext = self.ext.get(row.get("ID", ""))
-            if ext and EXT.get(row.get("indication", "")) != ext[0]:
-                self.add("ext_wrong_indication", ext[0], self.t[ext[0]].index(ext[1]), ext[1],
-                         "ID", f"study indication is {row.get('indication')!r}")
+
+    def documents(self):
+        """The same paper twice under two keys: any shared DOI, PMID or PMCID. Abstracts in
+        one conference supplement can share a DOI, so their DOI is not compared."""
+        seen = {}
+        for i, row in self.rows("sources"):
+            doi = "" if row.get("doc_type") == "conference_abstract" else row.get("doi", "")
+            for name, value in (("doi", doi.strip().lower()), ("pmid", row.get("pmid", "")),
+                                ("pmcid", row.get("pmcid", "").upper())):
+                if not value:
+                    continue
+                if (name, value) in seen:
+                    self.add("duplicate_document", "sources", i, row, name,
+                             f"same {name} as {seen[name, value]}: one document stored twice")
+                seen.setdefault((name, value), row.get("source_id", ""))
+
+    def topics(self):
+        for table in ("study_topics", "topic_fields"):
+            for i, row in self.rows(table):
+                if row.get("topic") and row["topic"] not in self.cb.topics:
+                    self.add("unknown_topic", table, i, row, "topic",
+                             f"no topics/{row['topic']}.toml")
+        for i, row in self.rows("topic_fields"):
+            topic, name = row.get("topic", ""), row.get("field", "")
+            if topic in self.cb.topics and name and not self.cb.topic_field(topic, name):
+                self.add("unknown_field", "topic_fields", i, row, "field",
+                         f"{name!r} is not a field of topic {topic}")
 
     def document_scope(self):
         """In out/<source_id>/ every row belongs to that document (working rule 4)."""
@@ -255,41 +287,67 @@ class _Run:
                              f"this folder holds only {self.source_id}")
 
     # -- evidence ----------------------------------------------------------------------
+    def _supported(self) -> dict:
+        """Every cell an evidence row can support, keyed like evidence rows:
+        (ID, table, row_key, field) -> (Field, value, table, i, row)."""
+        out = {}
+        for table, cols in ROW_KEY.items():
+            for i, row in self.rows(table):
+                row_key = "|".join(_key(row, cols))
+                for f in self.cb.tables[table]:
+                    out[row.get("ID", ""), table, row_key, f.name] = (f, row.get(f.name, ""),
+                                                                      table, i, row)
+        for i, row in self.rows("topic_fields"):
+            f = self.cb.topic_field(row.get("topic", ""), row.get("field", ""))
+            if f:
+                out[row.get("ID", ""), "topic_fields", row["topic"], f.name] = (
+                    f, row.get("value", ""), "topic_fields", i, row)
+        return out
+
+    def _target_problem(self, cell, ev) -> tuple | None:
+        """What is wrong with the cell an evidence row points at: (check, column, message)."""
+        table, field, row_key = ev.get("table", ""), ev.get("field", ""), ev.get("row_key", "")
+        if table in ROW_KEY and not self.cb.field(table, field):
+            return "evidence_unmatched", "field", f"{table} has no field {field!r}"
+        if table == "topic_fields" and not self.cb.topic_field(row_key, field):
+            return "evidence_unmatched", "field", f"topic {row_key!r} has no field {field!r}"
+        if table not in ROW_KEY and table != "topic_fields":
+            return None                      # an unknown table is reported by the enum check
+        if cell is None and table == "topic_fields":
+            return "evidence_unmatched", "field", f"no {field} value for topic {row_key!r}"
+        if cell is None:
+            return "evidence_unmatched", "row_key", f"no {table} row with this key"
+        if not cell[1]:
+            return "evidence_unmatched", "field", f"{table}.{field} is empty"
+        if cell[1] != ev.get("value", ""):
+            return ("evidence_value_mismatch", "value",
+                    f"evidence says {ev.get('value')!r}, table has {cell[1]!r}")
+        return None
+
     def evidence(self):
-        targets = {(table, r.get("ID", ""), "|".join(_key(r, cols))): r
-                   for table, cols in ROW_KEY.items() for r in self.t[table]}
+        cells = self._supported()
         index = {}
         for i, ev in self.rows("evidence"):
-            index[_key(ev, PRIMARY_KEY["evidence"])] = ev
+            key = _key(ev, CELL)
+            index.setdefault(key, []).append(ev)
             quote = ev.get("quote", "")
             if len(quote) > QUOTE_MAX and ev.get("quote_truncated") != "yes":
                 self.add("quote_too_long", "evidence", i, ev, "quote",
                          f"{len(quote)} characters; cut to {QUOTE_MAX} and set quote_truncated = yes")
-            table, field = ev.get("table", ""), ev.get("field", "")
-            target = targets.get((table, ev.get("ID", ""), ev.get("row_key", "")))
-            if table in ROW_KEY and not self.cb.field(table, field):
-                self.add("evidence_unmatched", "evidence", i, ev, "field", f"{table} has no field {field!r}")
-            elif table in ROW_KEY and target is None:
-                self.add("evidence_unmatched", "evidence", i, ev, "row_key", f"no {table} row with this key")
-            elif target is not None and not target.get(field):
-                self.add("evidence_unmatched", "evidence", i, ev, "field", f"{table}.{field} is empty")
-            elif target is not None and target[field] != ev.get("value", ""):
-                self.add("evidence_value_mismatch", "evidence", i, ev, "value",
-                         f"evidence says {ev.get('value')!r}, table has {target[field]!r}")
-        for table, cols in ROW_KEY.items():
-            needed = [f for f in self.cb.tables[table] if f.evidence != "none"]
-            for i, row in self.rows(table):
-                for f in needed:
-                    if not row.get(f.name):
-                        continue
-                    ev = index.get((row.get("ID", ""), table, "|".join(_key(row, cols)), f.name))
-                    if ev is None:
-                        self.add("missing_evidence", table, i, row, f.name,
-                                 f"needs an evidence row ({f.evidence})")
-                    elif f.evidence == "quote" and not ev.get("quote"):
-                        self.add("quote_missing", table, i, row, f.name, "evidence row has no quote")
-                    elif f.evidence == "location" and not ev.get("location"):
-                        self.add("location_missing", table, i, row, f.name, "evidence row has no location")
+            problem = self._target_problem(cells.get(key), ev)
+            if problem:
+                self.add(problem[0], "evidence", i, ev, problem[1], problem[2])
+        for key, (f, value, table, i, row) in cells.items():
+            if f.evidence == "none" or not value:
+                continue
+            evs = index.get(key, [])
+            if not evs:
+                self.add("missing_evidence", table, i, row, f.name,
+                         f"needs an evidence row ({f.evidence})")
+            elif f.evidence == "quote" and not any(ev.get("quote") for ev in evs):
+                self.add("quote_missing", table, i, row, f.name, "evidence row has no quote")
+            elif f.evidence == "location" and not any(ev.get("location") for ev in evs):
+                self.add("location_missing", table, i, row, f.name, "evidence row has no location")
 
     # -- applicability -----------------------------------------------------------------
     def applicability(self):
@@ -306,10 +364,10 @@ class _Run:
                         self.add("not_applicable_filled", table, i, row, f.name,
                                  "field does not apply to this study ("
                                  + ", ".join(f"{c} = {study.get(c, '')!r}" for c, _ in f.applies) + ")")
+        topic_filled = {(sid, name) for (sid, _, name), v in self.topic_values.items() if v}
         for i, row in self.rows("studies"):
-            ext = self.ext.get(row.get("ID", ""), (None, {}))[1]
             for name in filter(None, row.get("not_applicable", "").split("|")):
-                if row.get(name) or ext.get(name):
+                if row.get(name) or (row.get("ID", ""), name) in topic_filled:
                     self.add("not_applicable_filled", "studies", i, row, name,
                              "listed in not_applicable but filled")
 
@@ -323,6 +381,8 @@ def validate(tables: dict, cb: Codebook, source_id: str | None = None,
     run.cells()
     run.keys()
     run.links()
+    run.documents()
+    run.topics()
     run.study_documents()
     if source_id:
         run.document_scope()

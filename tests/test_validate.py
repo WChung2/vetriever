@@ -41,18 +41,9 @@ def _fda_primary(t):
     t["study_sources"][1]["role"] = "primary"
 
 
-def _swap_primary(t):
-    t["study_sources"][0]["role"], t["study_sources"][1]["role"] = "regulatory", "primary"
-
-
 def _unlinked(t):
     t["sources"].append({**t["sources"][1], "source_id": "PMID99999902"})
     t["results"][0]["source_id"] = "PMID99999902"
-
-
-def _wrong_indication(t):
-    t["studies"][0]["indication"] = "imha"
-    ev(t, "indication")["value"] = "imha"
 
 
 def _drop_evidence(t):
@@ -69,9 +60,21 @@ def _retrospective_randomised(t):
 
 
 def _orphan_study_source(t):
-    t["sources"].append({**t["sources"][0], "source_id": "PMID99999902"})
-    t["study_sources"].append({"ID": "VET-PMID99999902-1", "source_id": "PMID99999902",
-                               "role": "primary"})
+    t["sources"].append({**t["sources"][1], "source_id": "PMID99999902"})
+    t["study_sources"].append({"ID": "VET-2", "source_id": "PMID99999902", "role": "primary"})
+
+
+def topic_ev(t, field):
+    return next(r for r in t["evidence"] if r["table"] == "topic_fields" and r["field"] == field)
+
+
+def _bad_topic_value(t):
+    next(r for r in t["topic_fields"] if r["field"] == "surgery_category")["value"] = "soft"
+    topic_ev(t, "surgery_category")["value"] = "soft"
+
+
+def _same_paper_twice(t):
+    t["sources"].append({**t["sources"][0], "source_id": "PMID99999901"})
 
 
 CASES = [
@@ -79,6 +82,7 @@ CASES = [
     ("key_format", lambda t: t["sources"][0].update(source_id="pmid99999901")),
     ("key_missing", lambda t: t["results"][0].update(result_id="")),
     ("duplicate_key", _add_result_dup),
+    ("duplicate_key", lambda t: t["evidence"].append(dict(ev(t, "n_enrolled")))),
     ("enum", lambda t: t["studies"][0].update(blinding="triple")),
     ("enum", lambda t: t["studies"][0].update(not_applicable="random")),
     ("enum", lambda t: t["sites"][0].update(Country="Korea, Republic of")),
@@ -94,11 +98,21 @@ CASES = [
     ("too_long", lambda t: t["results"][0].update(as_written="x" * 501)),
     ("orphan", lambda t: t["breeds"][0].update(arm_id=f"{SID}-A9")),
     ("orphan", lambda t: t["people"][0].update(site_no="2")),
+    ("key_format", lambda t: t["studies"][0].update(ID="VET-PMID99999901-1")),
+    ("key_format", lambda t: t["studies"][0].update(ID="VET-01")),
     ("primary_count", _fda_primary),
-    ("id_not_primary", _swap_primary),
     ("unlinked_source", _unlinked),
+    ("unlinked_source", lambda t: t["conflicts"][0].update(secondary_source_id="PMID99999902")),
     ("missing_study_row", _orphan_study_source),
-    ("ext_wrong_indication", _wrong_indication),
+    ("orphan", lambda t: t["conflicts"][0].update(ID="VET-9")),
+    ("duplicate_document", _same_paper_twice),
+    ("unknown_topic", lambda t: t["study_topics"][0].update(topic="cats")),
+    ("orphan", lambda t: t["study_topics"][0].update(topic="imha")),
+    ("unknown_field", lambda t: t["topic_fields"][0].update(field="colour")),
+    ("enum", _bad_topic_value),
+    ("missing_evidence", lambda t: t["evidence"].remove(topic_ev(t, "surgery_category"))),
+    ("evidence_value_mismatch", lambda t: topic_ev(t, "surgery_category").update(value="mixed")),
+    ("evidence_unmatched", lambda t: topic_ev(t, "surgery_category").update(row_key="imha")),
     ("missing_evidence", _drop_evidence),
     ("evidence_unmatched", _evidence_for_empty_field),
     ("evidence_value_mismatch", lambda t: ev(t, "n_enrolled").update(value="61")),
@@ -107,6 +121,7 @@ CASES = [
     ("quote_too_long", lambda t: ev(t, "n_enrolled").update(quote="x" * 501)),
     ("not_applicable_filled", _retrospective_randomised),
     ("not_applicable_filled", lambda t: t["studies"][0].update(not_applicable="randomised")),
+    ("not_applicable_filled", lambda t: t["studies"][0].update(not_applicable="surgery_category")),
 ]
 
 
@@ -123,6 +138,21 @@ def test_truncated_quote_is_allowed():
     assert checks(t) == set()
 
 
+def test_a_value_may_have_several_quotes():
+    t = fixture.clean(CB)
+    t["evidence"].append({**ev(t, "Country"), "quote": "a second fixture quote for Country"})
+    t["evidence"].append({**ev(t, "n_enrolled"), "source_id": fixture.FDA,
+                          "quote": "the FOI summary's quote for n_enrolled"})
+    assert checks(t) == set()
+
+
+def test_an_unstated_design_does_not_rule_fields_out():
+    t = fixture.clean(CB)
+    t["studies"][0]["study_kind"] = ""                 # randomised etc. now can't be ruled out
+    t["evidence"].remove(ev(t, "study_kind"))
+    assert checks(t) == set()
+
+
 def test_listed_values_may_say_unknown_or_none():
     t = fixture.clean(CB)
     for field, value in (("trial_outcome", "unknown"), ("Overall Status", "UNKNOWN")):
@@ -135,13 +165,14 @@ def test_listed_values_may_say_unknown_or_none():
 
 def test_document_scope():
     t = fixture.clean(CB)
-    assert "wrong_source" in checks(t, source_id="PMID99999901")   # FIXTURE R2 is from FDA
+    doc = fixture.DOC
+    assert "wrong_source" in checks(t, source_id=doc)   # FIXTURE R2 is from FDA
     t["results"].pop()
-    assert checks(t, source_id="PMID99999901") == set()
+    assert checks(t, source_id=doc) == set()
     t2 = copy.deepcopy(t)
-    t2["study_sources"] = [r for r in t2["study_sources"] if r["source_id"] != "PMID99999901"]
+    t2["study_sources"] = [r for r in t2["study_sources"] if r["source_id"] != doc]
     t2["study_sources"][0]["role"] = "primary"
-    assert "unlinked_source" in checks(t2, source_id="PMID99999901")
+    assert "unlinked_source" in checks(t2, source_id=doc)
 
 
 def test_header_order_is_checked(tmp_path):

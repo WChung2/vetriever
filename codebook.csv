@@ -15,11 +15,10 @@ sources,access,C,enum,open_access|paywalled|abstract_only,open_access = full tex
 sources,file_name,T,text,,,none,all,,docs/<source_id>.<pdf|xml|html>
 sources,text_file,T,text,,,none,all,,docs/<source_id>.txt
 sources,retrieved_date,T,date,,,none,all,,"Date retrieved, YYYY-MM-DD."
-study_sources,ID,K,text,,,none,all,,Study key VET-<primary source_id>-<n>.
+study_sources,ID,K,text,,,none,all,,Study key VET-<n>.
 study_sources,source_id,K,text,,,none,all,,A document reporting this study.
 study_sources,role,C,enum,primary|secondary|regulatory,primary = the document that reports the study most fully; regulatory = an FDA or EMA summary of the study; secondary = any other document reporting it. Exactly one primary per study.,none,all,,The document's role for this study.
-studies,ID,K,text,,,none,all,,Study key VET-<primary source_id>-<n>.
-studies,indication,C,enum,surgical_pain|imha|cie,surgical_pain = pain after surgery; imha = immune-mediated haemolytic anaemia; cie = chronic inflammatory enteropathy.,quote,all,,Track.
+studies,ID,K,text,,,none,all,,Study key VET-<n>.
 studies,study_kind,C,enum,prospective_trial|retrospective_cohort|case_series|other,prospective_trial = dogs enrolled and followed forward under a protocol (including regulatory studies); retrospective_cohort = review of existing records of a defined group; case_series = descriptive report of several cases with no comparison; other = none of these.,quote,all,,Kind of study.
 studies,study_stage,C,enum,pilot|dose_determination|dose_confirmation|field_effectiveness|safety|pharmacokinetic|other,"pilot = called pilot, preliminary or feasibility; dose_determination = compares two or more doses of the same treatment to find the effective dose; dose_confirmation = confirms a chosen dose against a control; field_effectiveness = efficacy in clinical patients at fixed doses; safety = main aim is safety or tolerance; pharmacokinetic = main aim is drug levels; other = none of these.",quote,study_kind=prospective_trial|other,,Development stage.
 studies,Study Type,C,enum,INTERVENTIONAL|OBSERVATIONAL,"INTERVENTIONAL = treatment assigned by the study protocol; OBSERVATIONAL = treatment given in routine care, retrospective review, cohort.",quote,all,,App study type.
@@ -60,8 +59,14 @@ studies,Sponsor,T,pipe_list,,,none,all,,"Funders or sponsors, as written."
 studies,Country,C,pipe_list,@countries,"Names from vocab/countries.txt (the app's ClinicalTrials.gov names), sorted.",quote,all,,Countries where dogs were enrolled.
 studies,trial_outcome,C,enum,positive|negative|mixed|inconclusive|unknown,"Based on the pre-specified primary endpoint as reported, not the authors' framing. positive = primary endpoint met in favour of the treatment; negative = not met; mixed = primary endpoints or doses/arms disagree; inconclusive = results reported but no formal comparison, or authors state the study was underpowered; unknown = no results in any linked document. Quote the sentence reporting the primary-endpoint result.",quote,study_kind=prospective_trial|other,,Result of the primary endpoint.
 studies,outcome_basis,C,enum,primary_endpoint|authors_conclusion_only,authors_conclusion_only when the document gives no primary-endpoint result.,quote,study_kind=prospective_trial|other,,What trial_outcome rests on.
-studies,not_applicable,C,pipe_list,@fields,List a field only when applies_to says it applies but the design rules it out for this study; give the reason in notes.,none,all,,Row-level exceptions: field names (studies or the study's ext table) that do not apply to this study.
+studies,not_applicable,C,pipe_list,@fields,List a field only when applies_to says it applies but the design rules it out for this study; give the reason in notes.,none,all,,Row-level exceptions: field names (studies or the study's topic fields) that do not apply to this study.
 studies,notes,N,text,,,none,all,,"Only ambiguity, or what was left empty and why. Never facts that are not in the document."
+study_topics,ID,K,text,,,none,all,,Study key.
+study_topics,topic,K,text,,,none,all,,A topic this study belongs to: the name of a file in topics/.
+topic_fields,ID,K,text,,,none,all,,Study key.
+topic_fields,topic,K,text,,,none,all,,The topic that defines the field.
+topic_fields,field,K,text,,,none,all,,"Field name, defined in topics/<topic>.toml."
+topic_fields,value,T,text,,,none,all,,"The value. Its kind, type, allowed values and evidence come from the topic's definition."
 arms,ID,K,text,,,none,all,,Study key.
 arms,arm_id,K,text,,,none,all,,<ID>-A<n>.
 arms,arm_label,T,text,,,none,all,,Arm name as written.
@@ -126,35 +131,25 @@ definitions,ID,K,text,,,none,all,,Study key; empty for consensus statements and 
 definitions,term,T,text,,,none,all,,"e.g. complete remission, case definition, relapse."
 definitions,definition_verbatim,T,text,,,none,all,,"The definition, verbatim."
 definitions,location,T,text,,,none,all,,Section / table / page.
+conflicts,ID,K,text,,,none,all,,Study key.
+conflicts,table,T,enum,studies|arms|arm_doses|results|sites|people|breeds|definitions|topic_fields,,none,all,,Table of the disputed value.
+conflicts,row_key,K,text,,,none,all,,The row as in evidence.row_key; a short description when the conflict is not about one row.
+conflicts,field,T,text,,,none,all,,Column of the disputed value.
+conflicts,primary_source_id,K,text,,,none,all,,Document whose value the table keeps.
+conflicts,primary_value,T,text,,,none,all,,The value the table keeps.
+conflicts,secondary_source_id,K,text,,,none,all,,Document giving the other value (the same document when it contradicts itself).
+conflicts,secondary_value,T,text,,,none,all,,"The other value, as written."
+conflicts,resolution,C,enum,primary_wins|corrected|unresolved,primary_wins = the primary document's value is kept (the default); corrected = a person chose the value; unresolved = still to decide.,none,all,,How the conflict was settled.
+conflicts,note,N,text,,,none,all,,"Where each value is stated, in your own words."
 evidence,ID,K,text,,,none,all,,Study key.
 evidence,source_id,K,text,,,none,all,,Document the quote comes from.
-evidence,table,T,enum,studies|arms|arm_doses|sites|people|breeds|ext_pain|ext_imha|ext_cie,,none,all,,Table of the supported value.
-evidence,row_key,K,text,,,none,all,,arm_id | dose_id | site_no | person_no | <arm_id>|<Breed>; empty for studies and ext tables.
+evidence,table,T,enum,studies|arms|arm_doses|sites|people|breeds|topic_fields,,none,all,,Table of the supported value.
+evidence,row_key,K,text,,,none,all,,arm_id | dose_id | site_no | person_no | <arm_id>|<Breed> | the topic for topic_fields; empty for studies.
 evidence,field,T,text,,,none,all,,Column name of the supported value.
 evidence,value,T,text,,,none,all,,Exactly as entered in that field.
 evidence,quote,T,text,,,none,all,,"Verbatim support, at most 500 characters; empty for location-only rows."
 evidence,quote_truncated,C,enum,yes|no,yes when the quote was cut.,none,all,,Quote cut to 500 characters.
 evidence,location,T,text,,,none,all,,Section / table / page.
-ext_pain,ID,K,text,,,none,indication=surgical_pain,,Study key.
-ext_pain,surgery_types,T,pipe_list,,,none,indication=surgical_pain,,Surgeries as written.
-ext_pain,surgery_category,C,enum,soft_tissue|orthopedic|dental|neurologic|ophthalmic|mixed,mixed = more than one category in the study.,quote,indication=surgical_pain,,Surgery category.
-ext_pain,anesthesia_protocol,T,text,,,location,indication=surgical_pain,,"Anaesthesia protocol, verbatim."
-ext_pain,premedication,T,text,,,location,indication=surgical_pain,,"Premedication, verbatim."
-ext_pain,pain_assessment_times,T,text,,,location,indication=surgical_pain,,"When pain was scored, verbatim."
-ext_pain,rescue_threshold,T,text,,,location,indication=surgical_pain,,"Score that triggers rescue analgesia, verbatim."
-ext_imha,ID,K,text,,,none,indication=imha,,Study key.
-ext_imha,imha_classification,C,enum,non_associative|associative|mixed|unspecified,non_associative = primary/idiopathic; associative = secondary to a stated cause.,quote,indication=imha,,IMHA classification.
-ext_imha,immunosuppressive_protocol,T,text,,,location,indication=imha,,Verbatim.
-ext_imha,antithrombotic_protocol,T,text,,,location,indication=imha,,Verbatim.
-ext_imha,transfusion_trigger,T,text,,,location,indication=imha,,Verbatim.
-ext_imha,entry_pcv,T,text,,,location,indication=imha,,"PCV at entry, verbatim."
-ext_cie,ID,K,text,,,none,indication=cie,,Study key.
-ext_cie,ce_subtype,C,enum,FRE|ARE|IRE|NRE|mixed|unclassified,"FRE food-, ARE antibiotic-, IRE immunosuppressant-responsive, NRE non-responsive; mixed = several; unclassified = not classified.",quote,indication=cie,,Chronic enteropathy subtype by treatment response.
-ext_cie,glucocorticoid_protocol,T,text,,,location,indication=cie,,"Starting dose and taper, verbatim."
-ext_cie,prior_diet_trial,T,text,,,location,indication=cie,,Verbatim.
-ext_cie,prior_antibiotic_trial,T,text,,,location,indication=cie,,Verbatim.
-ext_cie,follow_up_as_written,T,text,,,location,indication=cie,,Verbatim.
-ext_cie,user_type,C,enum,new_users|prevalent_users|mixed|unclear,new_users = enter at the start of glucocorticoid treatment; prevalent_users = already on treatment at entry.,quote,indication=cie,,Treatment status at entry.
 derived,icd10_primary,D,text,,,none,all,,Computed downstream by our code. Never extracted. ICD-10 proxy code.
 derived,icd10_alternates,D,text,,,none,all,,Computed downstream by our code. Never extracted. Alternate ICD-10 codes.
 derived,disease_stage,D,text,,,none,all,,Computed downstream by our code. Never extracted. Disease stage.

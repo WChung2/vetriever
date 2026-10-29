@@ -1,0 +1,17 @@
+# secrets: API keys and contact email live only in .env
+.env
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Full texts stay on this computer: paywalled papers may not be shared.
+# Open-access and public-domain texts can be shared later, deliberately.
+corpus/docs/
+
+# Saved model calls contain document text
+corpus/calls/
+
+.DS_Store

@@ -1,0 +1,63 @@
+# Track brief: canine post-surgical pain. DRAFT for you to correct.
+# The Search agent screens against include/exclude; the Review agent checks coverage
+# against [targets] and writes new queries until a round finds nothing new.
+# Lines marked DECIDE need your call.
+
+indication = "surgical_pain"
+question = """Canine post-surgical pain control, any type of surgery. Evidence to design a dose
+range-finding study of a new analgesic: efficacy and safety endpoints, pain scales, rescue
+analgesia rules, dose selection, eligibility criteria, sample sizes."""
+
+[screen]
+include = [
+  "Dogs (other species allowed only if dog results are reported separately)",
+  "Pain after a surgical procedure, or analgesia given around surgery with pain as an outcome",
+  "Prospective clinical study (randomised or not, including studies in research dogs undergoing surgery), regulatory effectiveness or safety study, or retrospective study with a pain or rescue-analgesia outcome",
+  "Reports efficacy (pain scores, rescue analgesia) and/or safety of the analgesic",
+]
+exclude = [
+  "Cats or other species only",
+  "Chronic pain without surgery (e.g. osteoarthritis)",
+  "Anaesthesia studies where pain or analgesia is not measured",
+  "Single-case reports",
+  "Reviews, editorials, surveys (reviews are kept as leads: their references are followed)",
+  # DECIDE: drug-level (pharmacokinetic) studies in healthy dogs help choose doses but are
+  # not efficacy trials. Excluded for now; move this line to include if you want them.
+  "Pharmacokinetic-only studies in dogs without surgery",
+]
+unsure = "kept for the Review agent and listed for you; never silently dropped"
+years = "any"            # DECIDE: e.g. "2000-" to skip older studies
+languages = "any"        # verbatim quotes stay in the original language
+
+[targets]   # the Review agent searches again where these are thin
+drug_classes = [
+  "NSAIDs (carprofen, meloxicam, robenacoxib, firocoxib, deracoxib)",
+  "opioids (methadone, buprenorphine, hydromorphone, morphine, fentanyl, butorphanol, tramadol)",
+  "local anaesthetics and blocks (bupivacaine incl. liposomal, ropivacaine, lidocaine)",
+  "alpha-2 agonists (dexmedetomidine, medetomidine)",
+  "NMDA antagonists (ketamine, amantadine)",
+  "gabapentinoids (gabapentin, pregabalin)",
+  "others (paracetamol/acetaminophen, maropitant, grapiprant)",
+]
+surgery_types = ["ovariohysterectomy / ovariectomy", "castration", "orthopaedic (e.g. TPLO, cruciate)",
+                 "dental extraction", "ophthalmic", "neurologic (e.g. hemilaminectomy)",
+                 "other soft tissue (mastectomy, laparotomy)"]
+designs = ["dose-ranging or several doses of one drug (priority)", "placebo-controlled",
+           "active-controlled / non-inferiority", "regulatory field effectiveness studies"]
+# Leads only, from memory: the pipeline must find each product's FDA FOI summary and EMA
+# page itself and copy identifiers from there, never from this list.
+regulatory_leads = ["Rimadyl (carprofen)", "Metacam (meloxicam)", "Onsior (robenacoxib)",
+                    "Previcox (firocoxib)", "Deramaxx (deracoxib)",
+                    "Nocita (bupivacaine liposome)", "Recuvyra (transdermal fentanyl)"]
+
+[seed_queries]   # tested live on 2026-10-28; the agents add more
+pubmed = [
+  '"Dogs"[Mesh] AND ("Postoperative Pain"[Mesh] OR ((postoperative[tiab] OR post-operative[tiab] OR perioperative[tiab]) AND (pain[tiab] OR analges*[tiab]))) AND ("Clinical Trial, Veterinary"[pt] OR "Randomized Controlled Trial, Veterinary"[pt] OR random*[tiab] OR "Dose-Response Relationship, Drug"[Mesh] OR dose[tiab] OR doses[tiab])',
+]
+europepmc = [
+  '(dog OR dogs OR canine) AND ("postoperative pain" OR "post-operative pain" OR "postoperative analgesia") AND NOT SRC:MED',
+  'BODY:"dose-ranging" AND (dog OR canine) AND (postoperative OR surgery) AND OPEN_ACCESS:Y',
+]
+# OpenAlex ranks by relevance and counts anything loosely related (thousands of hits);
+# only the top-ranked results of each query are screened.
+openalex = ["dog postoperative analgesia dose", "canine postoperative pain randomized"]

@@ -1,0 +1,1 @@
+result_id,ID,source_id,arm_id,endpoint,timepoint_value,timepoint_unit,timepoint_as_written,n,events,statistic_type,value,value_unit,variability_type,variability_value,variability_low,variability_high,comparison,reference_arm_id,p_value,as_written,location

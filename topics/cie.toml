@@ -1,9 +1,190 @@
-# Topic brief: chronic inflammatory enteropathy (CIE) in dogs. DRAFT: only the question and the
-# extra fields so far; the Planner (stage 2) drafts the search sections.
+# Topic cie: written by `vet plan` on 2026-11-02 from the vet's words
+# ("Glucocorticoid treatment of chronic inflammatory enteropathy in dogs: remission by timepoint, days to remission, escalation to another immunosuppressant, steroid dose over time and stopping, and when treatment started for dogs already treated at entry.") and 3 Planner round(s); the
+# rounds are in corpus/plan/cie/. Sources: vet, paper, answer, mesh, suggestion.
 
-question = """Glucocorticoid treatment of chronic inflammatory enteropathy in dogs: remission by
-timepoint, days to remission, escalation to another immunosuppressant, steroid dose over time
-and stopping, and when treatment started for dogs already treated at entry."""
+question = "What are the remission rates over time, time to remission, glucocorticoid dosing regimens, and rates of escalation to secondary immunosuppressants in dogs treated for chronic inflammatory enteropathy, protein-losing enteropathy, or intestinal lymphangiectasia?"
+known = ["31328260", "37186013", "34958965", "41997887", "39183535", "39180366", "38472110", "26025135", "36256653"]
+
+[screen]
+species = "dogs"
+condition = "chronic inflammatory enteropathy"
+also_called = ["chronic inflammatory enteropathies", "chronic enteropathy", "chronic enteropathies", "inflammatory bowel disease", "inflammatory bowel diseases", "protein-losing enteropathy", "protein-losing enteropathies", "intestinal lymphangiectasia"]
+related = ["food-responsive enteropathy", "antibiotic-responsive enteropathy", "intestinal lymphoma", "focal intestinal lipogranulomatous lymphangitis"]
+treatments = ["Glucocorticoid treatment", "steroid", "another immunosuppressant", "prednisolone", "prednisone", "budesonide", "dexamethasone", "cyclosporine", "chlorambucil", "azathioprine"]
+
+[[terms]]
+block = "species"
+kind = "mesh"
+term = "Dogs"
+source = "paper"
+evidence = "41742497"
+
+[[terms]]
+block = "species"
+kind = "text"
+term = "dogs"
+source = "vet"
+evidence = "dogs"
+
+[[terms]]
+block = "species"
+kind = "text"
+term = "dog"
+source = "suggestion"
+evidence = "dog"
+
+[[terms]]
+block = "species"
+kind = "text"
+term = "canine*"
+source = "suggestion"
+evidence = "canine*"
+
+[[terms]]
+block = "species"
+kind = "text"
+term = "Canis familiaris"
+source = "suggestion"
+evidence = "Canis familiaris"
+
+[[terms]]
+block = "condition"
+kind = "mesh"
+term = "Inflammatory Bowel Diseases"
+source = "paper"
+evidence = "41742497"
+
+[[terms]]
+block = "condition"
+kind = "mesh"
+term = "Protein-Losing Enteropathies"
+source = "paper"
+evidence = "30762910"
+
+[[terms]]
+block = "condition"
+kind = "text"
+term = "chronic inflammatory enteropathy"
+source = "vet"
+evidence = "chronic inflammatory enteropathy"
+
+[[terms]]
+block = "condition"
+kind = "text"
+term = "chronic inflammatory enteropathies"
+source = "suggestion"
+evidence = "chronic inflammatory enteropathies"
+
+[[terms]]
+block = "condition"
+kind = "text"
+term = "chronic enteropathy"
+source = "paper"
+evidence = "27747868"
+
+[[terms]]
+block = "condition"
+kind = "text"
+term = "chronic enteropathies"
+source = "suggestion"
+evidence = "chronic enteropathies"
+
+[[terms]]
+block = "condition"
+kind = "text"
+term = "inflammatory bowel disease"
+source = "paper"
+evidence = "12774968"
+
+[[terms]]
+block = "condition"
+kind = "text"
+term = "inflammatory bowel diseases"
+source = "suggestion"
+evidence = "inflammatory bowel diseases"
+
+[[terms]]
+block = "condition"
+kind = "text"
+term = "protein-losing enteropathy"
+source = "paper"
+evidence = "30762910"
+
+[[terms]]
+block = "condition"
+kind = "text"
+term = "protein-losing enteropathies"
+source = "paper"
+evidence = "30762910"
+
+[[terms]]
+block = "condition"
+kind = "text"
+term = "intestinal lymphangiectasia"
+source = "answer"
+evidence = "Include primary intestinal lymphangiectasia cohorts"
+
+[[terms]]
+block = "condition"
+kind = "text"
+term = "lymphoplasmacytic enteritis"
+source = "suggestion"
+evidence = "lymphoplasmacytic enteritis"
+
+[[terms]]
+block = "condition"
+kind = "text"
+term = "steroid-responsive enteropathy"
+source = "suggestion"
+evidence = "steroid-responsive enteropathy"
+
+[[terms]]
+block = "condition"
+kind = "text"
+term = "immunosuppressant-responsive enteropathy"
+source = "suggestion"
+evidence = "immunosuppressant-responsive enteropathy"
+
+[[terms]]
+block = "condition"
+kind = "text"
+term = "immunosuppressive-responsive enteropathy"
+source = "suggestion"
+evidence = "immunosuppressive-responsive enteropathy"
+
+[[terms]]
+block = "condition"
+kind = "text"
+term = "Protein Losing Enteropathies"
+source = "suggestion"
+evidence = "Protein Losing Enteropathies"
+
+[[terms]]
+block = "condition"
+kind = "text"
+term = "Protein Losing Enteropathy"
+source = "suggestion"
+evidence = "Protein Losing Enteropathy"
+
+[[targets]]
+item = "remission by timepoint"
+source = "vet"
+
+[[targets]]
+item = "days to remission"
+source = "vet"
+
+[[targets]]
+item = "escalation to another immunosuppressant"
+source = "vet"
+
+[[targets]]
+item = "steroid dose over time and stopping"
+source = "vet"
+
+[[targets]]
+item = "when treatment started for dogs already treated at entry"
+source = "vet"
 
 # Extra fields for this topic, on top of the core codebook; same columns as codebook.csv.
 [[fields]]
@@ -42,13 +223,6 @@ kind = "T"
 type = "text"
 evidence = "location"
 description = "Antibiotic trial before entry, verbatim."
-
-[[fields]]
-field = "follow_up_as_written"
-kind = "T"
-type = "text"
-evidence = "location"
-description = "Follow-up, verbatim."
 
 [[fields]]
 field = "user_type"

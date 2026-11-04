@@ -1,0 +1,55 @@
+{# the pane's head: a search's title, status and tabs, or a plain page title #}
+{% macro topic_head(name, s, tab, counts) %}
+<header class="pane-head">
+  <h1>{{ s.title }}</h1>
+  <span class="status {{ s.tone }}">{{ s.status }}</span>
+  <nav class="tabs" aria-label="This search">
+    <a href="/topics/{{ name }}/chat" {% if tab == "chat" %}aria-current="page"{% endif %}>Chat</a>
+    <a href="/topics/{{ name }}/review" {% if tab == "review" %}aria-current="page"{% endif %}>Review{% if counts.to_review %} <span class="count wait" title="waiting for your decision">{{ counts.to_review | thousands }}</span>{% endif %}</a>
+    <a href="/topics/{{ name }}/studies" {% if tab == "studies" %}aria-current="page"{% endif %}>Studies <span class="count">{{ counts.studies }}</span></a>
+    <a href="/topics/{{ name }}/who" {% if tab == "who" %}aria-current="page"{% endif %}>Who &amp; where</a>
+  </nav>
+</header>
+{% endmacro %}
+
+{% macro page_head(title, sub="") %}
+<header class="pane-head"><h1>{{ title }}</h1>{% if sub %}<span class="sub-head">{{ sub }}</span>{% endif %}</header>
+{% endmacro %}
+
+{# the counts, each with what it means, always visible: the five steps' results #}
+{% macro funnel(c) %}
+<section class="funnel-box" aria-label="How far this search has come">
+  <ol class="funnel five">
+    <li><b>{{ c.found | thousands }}</b><span>found</span><small>articles the search turned up</small></li>
+    <li><b>{{ c.keep | thousands }}</b><span>kept by screening</span><small>on topic, judged from the abstract</small></li>
+    <li><b>{{ c.approved | thousands }}</b><span>approved by you</span><small>in your review{% if c.to_review %}; {{ c.to_review | thousands }} still to review{% endif %}</small></li>
+    <li><b>{{ c.full_text | thousands }}</b><span>full text</span><small>approved articles downloaded</small></li>
+    <li><b>{{ c.studies | thousands }}</b><span>in the database</span><small>studies read in, every value cited</small></li>
+  </ol>
+  <details class="explain"><summary>What do these numbers mean?</summary>
+    <dl>
+      <dt>Found</dt><dd>Every article the search turned up: the PubMed and Europe PMC searches, then the search rounds that widen it (following the references and citations of key articles, adding missed terms). Duplicates are merged. At this point only the title and abstract are known.</dd>
+      <dt>Kept by screening</dt><dd>Articles the model judged on topic from the title and abstract: the right animals with the condition (or a related one), or healthy animals given a treatment of interest. When unsure, it keeps the article. Of the rest, {{ c.off_topic | thousands }} were dropped (each with its reason and the sentence it rests on; you can still keep one in your review), {{ c.lead | thousands }} are overviews and guidelines (not studies: used to find more studies), and {{ c.aside | thousands }} are letters, comments and errata.</dd>
+      <dt>Approved by you</dt><dd>Your review: the articles you decided should be read in full{% if c.rejected %}, after rejecting {{ c.rejected | thousands }}{% endif %}. Only approved articles go further.</dd>
+      <dt>Full text</dt><dd>Approved articles whose full text could be downloaded legally (open access, PubMed Central, or publisher access). The others are read from their abstract, or you download the most important ones by hand.</dd>
+      <dt>In the database</dt><dd>Articles the model has read into the database: one study each (two articles about the same trial become one), with its arms, doses and outcomes, every value with the sentence it came from.</dd>
+    </dl>
+  </details>
+</section>
+{% endmacro %}
+
+{% macro composer(placeholder, enabled=False, q="") %}
+<div class="composer"><div class="composer-inner">
+  <form class="box" method="post" action="/chat" aria-disabled="{{ 'false' if enabled else 'true' }}">
+    <input type="hidden" name="csrf" value="{{ token }}">
+    <label class="sr" for="say">Message</label>
+    <textarea id="say" name="text" rows="2" placeholder="{{ placeholder }}" {% if not enabled %}disabled{% endif %}>{{ q }}</textarea>
+    <button class="send" type="submit" {% if not enabled %}disabled{% endif %} aria-label="Send">↑</button>
+  </form>
+  {% if enabled %}
+  <p class="privacy">Your words go to Gemini (Google, paid tier) to plan the search. Don't type client or patient details. The database stays on this Mac.</p>
+  {% else %}
+  <p class="privacy">The Planner joins the chat in the next step. Until then, past searches are shown here and new ones start with <code>vet plan</code>.</p>
+  {% endif %}
+</div></div>
+{% endmacro %}

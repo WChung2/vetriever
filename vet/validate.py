@@ -6,9 +6,18 @@ every problem becomes one Issue.
 
 A document folder holds that document's tables; sources.csv and study_sources.csv are read
 from the corpus folder when the checked folder has none.
+
+Against the documents themselves: every quote must be in its document's text
+(docs/<source_id>.txt), every copied value or number in its own quote, and every field that
+copies the document (VERBATIM) in the text of one of the study's documents. Spacing, case and
+hyphens don't count, so line breaks and hyphenation in a PDF's text don't matter; a number may
+be written in words ("Forty-three") and a date as the document writes it (only its year is
+checked). A document without a readable text file is reported, not skipped silently.
 """
 import csv
 import re
+import unicodedata
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -76,6 +85,16 @@ LINKS = [
 # rows are supported too, with row_key = the topic (see _Run.evidence)
 ROW_KEY = {"studies": (), "arms": ("arm_id",), "arm_doses": ("dose_id",), "sites": ("site_no",),
            "people": ("person_no",), "breeds": ("arm_id", "Breed")}
+# a field whose value is itself a copy of the document is named *as_written or *_verbatim
+VERBATIM = re.compile(r"(?:^|_)as_written$|_verbatim$")
+# numbers in a results row must be in its as_written, the row's quote
+RESULT_NUMBERS = ("timepoint_value", "n", "events", "value", "variability_value",
+                  "variability_low", "variability_high", "p_value")
+REQUIRED = {("results", "result_kind")}
+ONES = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+        "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen",
+        "eighteen", "nineteen"]
+TENS = ["twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"]
 
 
 @dataclass(frozen=True)
@@ -115,6 +134,43 @@ def _criteria_problem(v: str) -> str:
         return "Exclusion Criteria come before Inclusion Criteria"
     bad = next((ln for ln in lines if ln not in HEADERS and not ln.startswith("* ")), None)
     return f"line is not a header or a '* ' criterion: {bad[:60]!r}" if bad else ""
+
+
+def _flat(s: str) -> str:
+    """For comparing a quote with a document: the same letters and digits in the same order;
+    case, spaces, hyphens and dashes, and thousands commas don't count."""
+    s = unicodedata.normalize("NFKC", s).lower()
+    s = re.sub(r"(\d),(\d{3})(?!\d)", r"\1\2", s)
+    return re.sub(r"[\s\-\u2010-\u2015\u2212]+", "", s)
+
+
+def _words(n: int) -> list[str]:
+    """How a number below 1000 may be written in words: 43 -> forty-three."""
+    if n < 20:
+        return [ONES[n]]
+    if n < 100:
+        return [TENS[n // 10 - 2] + ("-" + ONES[n % 10] if n % 10 else "")]
+    rest = _words(n % 100) if n % 100 else [""]
+    head = ONES[n // 100] + " hundred"
+    return [f"{head} {joint}{r}".strip() for r in rest for joint in ("", "and ")]
+
+
+def _in_quote(value: str, ftype: str, quote: str) -> bool:
+    """Is the value in the quote? A number must stand on its own (4 is not in "24 h"), may
+    drop its leading zero (.017), and may be written in words; a date needs its year."""
+    if ftype in ("integer", "number"):
+        q = unicodedata.normalize("NFKC", quote).replace("\u2212", "-")
+        q = re.sub(r"(\d)[,\s](\d{3})(?!\d)", r"\1\2", q)          # 1,200 and 87 400
+        forms = {value, value[1:] if value.startswith("0.") else value}
+        if any(re.search(rf"(?<![\d.]){re.escape(f)}(?!\d|\.\d)", q) for f in forms):
+            return True
+        if value.isdigit() and int(value) < 1000:
+            words = _words(int(value)) + (["no", "none"] if value == "0" else [])
+            return any(_flat(w) in _flat(quote) for w in words)
+        return False
+    if _flat(value) in _flat(quote):
+        return True
+    return ftype == "date" and value[:4] in quote
 
 
 class _Run:
@@ -349,6 +405,79 @@ class _Run:
             elif f.evidence == "location" and not any(ev.get("location") for ev in evs):
                 self.add("location_missing", table, i, row, f.name, "evidence row has no location")
 
+    def values_in_quotes(self):
+        """Each copied value (and each number) must be in one of its own quotes."""
+        quotes = defaultdict(list)
+        for ev in self.t["evidence"]:
+            if ev.get("quote"):
+                quotes[_key(ev, CELL)].append(ev["quote"])
+        for key, (f, value, table, i, row) in self._supported().items():
+            if not value or not quotes.get(key) or f.type == "criteria" or not (
+                    f.kind == "T" or f.type in ("integer", "number", "year", "date")):
+                continue
+            items = value.split("|") if f.type == "pipe_list" else [value]
+            missing = [x for x in items if not any(_in_quote(x, f.type, q) for q in quotes[key])]
+            if missing:
+                self.add("value_not_in_quote", table, i, row, f.name,
+                         f"{missing[0][:60]!r} is not in its quote")
+        # a denominator often comes from a table's header, so the arm's or study's own
+        # (quoted) size also counts
+        sizes = defaultdict(set)
+        for r in self.t["arms"]:
+            sizes[r.get("ID", ""), r.get("arm_id", "")] |= {r.get("n_assigned"), r.get("n_analysed")}
+        for r in self.t["studies"]:
+            sizes[r.get("ID", ""), ""] |= {r.get(c) for c in ("n_enrolled", "n_randomised",
+                                                               "n_analysed")}
+        for i, row in self.rows("results"):
+            quote = row.get("as_written", "")
+            for name in RESULT_NUMBERS:
+                v = row.get(name, "")
+                if name == "n" and v in sizes[row.get("ID", ""), row.get("arm_id", "")]:
+                    continue
+                if v and quote and not _in_quote(v.lstrip("-<>=≤≥ "), "number", quote):
+                    self.add("value_not_in_quote", "results", i, row, name,
+                             f"{v!r} is not in as_written")
+            n, events = row.get("n", ""), row.get("events", "")
+            if n.isdigit() and events.isdigit() and int(events) > int(n):
+                self.add("events_more_than_n", "results", i, row, "events",
+                         f"{events} events in {n} animals")
+        for table, name in sorted(REQUIRED):
+            for i, row in self.rows(table):
+                if not row.get(name):
+                    self.add("missing_value", table, i, row, name, "must be filled")
+
+    def documents_text(self, root: Path):
+        """Quotes and verbatim fields against the documents' own text."""
+        texts = {}
+        for i, src in self.rows("sources"):
+            path = root / src["text_file"] if src.get("text_file") else None
+            if path and path.is_file():
+                texts[src["source_id"]] = _flat(path.read_text("utf-8"))
+            else:
+                self.add("no_text", "sources", i, src, "text_file",
+                         f"no text file at {path}: its quotes can't be checked" if path else
+                         "no text_file: its quotes can't be checked")
+        for i, ev in self.rows("evidence"):
+            text = texts.get(ev.get("source_id", ""))
+            if text is not None and ev.get("quote") and _flat(ev["quote"]) not in text:
+                self.add("quote_not_in_document", "evidence", i, ev, "quote",
+                         f"not in {ev['source_id']}'s text: {ev['quote'][:60]!r}")
+        docs = defaultdict(list)
+        for r in self.t["study_sources"]:
+            docs[r.get("ID", "")].append(r.get("source_id", ""))
+        copies = [(table, i, row, f.name, row.get(f.name, "")) for table in TABLES
+                  if table not in ("evidence", "conflicts") for f in self.cb.tables[table]
+                  if VERBATIM.search(f.name) for i, row in self.rows(table)]
+        copies += [("topic_fields", i, row, "value", row.get("value", ""))
+                   for i, row in self.rows("topic_fields") if VERBATIM.search(row.get("field", ""))]
+        for table, i, row, name, value in copies:
+            mine = [row["source_id"]] if row.get("source_id") else docs.get(row.get("ID", ""), [])
+            have = [texts[d] for d in mine if d in texts]
+            parts = [_flat(x) for x in re.split(r"…|\.\.\.", value) if _flat(x)]  # joined passages
+            if parts and have and not any(all(x in t for x in parts) for t in have):
+                self.add("not_in_document", table, i, row, name,
+                         f"not in the text of {', '.join(mine)}: {value[:60]!r}")
+
     # -- applicability -----------------------------------------------------------------
     def applicability(self):
         for table in TABLES:
@@ -360,10 +489,11 @@ class _Run:
                 if study is None:
                     continue
                 for f in limited:
-                    if row.get(f.name) and not f.applies_to(study):
+                    seen = {**study, **row}
+                    if row.get(f.name) and not f.applies_to(seen):
                         self.add("not_applicable_filled", table, i, row, f.name,
-                                 "field does not apply to this study ("
-                                 + ", ".join(f"{c} = {study.get(c, '')!r}" for c, _ in f.applies) + ")")
+                                 "field does not apply to this row ("
+                                 + ", ".join(f"{c} = {seen.get(c, '')!r}" for c, _ in f.applies) + ")")
         topic_filled = {(sid, name) for (sid, _, name), v in self.topic_values.items() if v}
         for i, row in self.rows("studies"):
             for name in filter(None, row.get("not_applicable", "").split("|")):
@@ -373,8 +503,10 @@ class _Run:
 
 
 def validate(tables: dict, cb: Codebook, source_id: str | None = None,
-             headers: dict | None = None) -> list[Issue]:
-    """source_id=None checks a merged set; a source_id checks that document's folder."""
+             headers: dict | None = None, root: Path | None = None) -> list[Issue]:
+    """source_id=None checks a merged set; a source_id checks that document's folder.
+    root is the folder sources.text_file is relative to; without it the documents' text is
+    not read."""
     run = _Run(tables, cb, source_id)
     if headers:
         run.headers(headers)
@@ -387,6 +519,9 @@ def validate(tables: dict, cb: Codebook, source_id: str | None = None,
     if source_id:
         run.document_scope()
     run.evidence()
+    run.values_in_quotes()
+    if root:
+        run.documents_text(root)
     run.applicability()
     return run.issues
 

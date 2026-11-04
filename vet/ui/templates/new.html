@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% from "_head.html" import composer %}
+{% block title %}New question{% endblock %}
+{% block pane %}
+<div class="thread"><div class="thread-inner">
+  <div class="welcome">
+    <span class="brand-mark big" aria-hidden="true">V</span>
+    <h1>What would you like to find out?</h1>
+    <p>Describe the animals, the condition and what you need to know. Vetriever plans the search with you, shows real papers to check, then builds a cited database.</p>
+    <div class="examples">
+      {% for e in examples %}
+      <a class="example" href="/?q={{ e | urlencode }}">{{ e }}<small>example</small></a>
+      {% endfor %}
+    </div>
+  </div>
+</div></div>
+{{ composer("Describe your question…", enabled=chat_enabled, q=q) }}
+{% endblock %}

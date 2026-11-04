@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% from "_head.html" import page_head %}
+{% block title %}Who &amp; where{% endblock %}
+{% block pane %}
+{{ page_head("Who & where", "all searches") }}
+<main class="history"><div class="history-inner">
+<p class="lede">Institutions that led the approved papers (a first or last author there), from OpenAlex author records. Middle authors are left out: they often help with one part.</p>
+{% set topic = "" %}
+{% include "_who_table.html" %}
+</div></main>
+{% endblock %}

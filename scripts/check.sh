@@ -7,22 +7,22 @@ cd "$(dirname "$0")/.."
 step() { printf '\n== %s\n' "$1"; }
 fail() { printf '\nFAILED: %s\n' "$1" >&2; exit 1; }
 
-step "1/5 packages match uv.lock"
+step "1/6 packages match uv.lock"
 uv sync --locked
 
-step "2/5 lint (ruff)"
+step "2/6 lint (ruff)"
 uv run --no-sync ruff check .
 
-step "3/5 tests (network blocked)"
+step "3/6 tests (network blocked)"
 uv run --no-sync pytest -q
 
-step "4/5 templates/ and codebook.md match codebook.csv"
+step "4/6 templates/ and codebook.md match codebook.csv"
 uv run --no-sync vet templates --check
 
-step "5/5 nothing secret or private in the files git would publish"
+step "5/6 nothing secret or private in the files git would publish"
 # the files a 'git add -A' would include: tracked + new, minus .gitignore'd
 files=$(git ls-files --cached --others --exclude-standard)
-private=$(printf '%s\n' "$files" | grep -E '(^|/)\.env$|(^|/)(corpus|examples|merged|out|reports)/' || true)
+private=$(printf '%s\n' "$files" | grep -E '(^|/)\.env$|(^|/)(corpus|examples|merged|out|reports)/|^docs/pipeline\.md$|^decisions\.md$' || true)
 [ -z "$private" ] || fail "private files would be published (keep them git-ignored):
 $private"
 # no data on GitHub: the only tables allowed are the codebook and the empty templates
@@ -41,5 +41,8 @@ if [ -f .env ]; then          # your own key values must not appear in any publi
   done < <(grep -E '^[A-Z_]+=' .env)
 fi
 echo "ok"
+
+step "6/6 the screens for real: vet ui on made-up data, in a browser, on this machine only"
+uv run --no-sync python -W ignore::DeprecationWarning scripts/ui_smoke.py
 
 printf '\nAll checks passed.\n'

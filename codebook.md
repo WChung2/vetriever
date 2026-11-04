@@ -123,21 +123,29 @@ When unsure, leave the field empty and say why in notes.
 | Eligibility Criteria | T | criteria |  | Inclusion/exclusion (or case-selection) criteria in the fixed layout. | location | all |
 | Primary Outcome Measures | T | text |  | Primary endpoint(s), verbatim. | location | all |
 | dose_selection_rationale | T | text |  | Why these doses were chosen, verbatim. | location | all |
-| rescue_or_escalation_rule | T | text |  | Rescue analgesia (pain), transfusion trigger (IMHA) or adding an immunosuppressant (CIE): threshold and action, verbatim. | location | all |
+| rescue_or_escalation_rule | T | text |  | Rescue treatment or escalation rule, threshold and action, verbatim (e.g. rescue analgesia; adding an immunosuppressant). When the study's topic has its own field for it (IMHA transfusion_trigger), that field takes it instead. | location | all |
 | trial_results_summary | T | text |  | 1-3 sentences verbatim from results or conclusion. | location | all |
-| Started date | T | date |  | Start of enrolment, at the precision stated. | quote | all |
-| Complete Date | T | date |  | End of the study, at the precision stated. | quote | all |
+| Started date | T | date |  | Start of enrolment (retrospective: date of the first case in the records searched), at the precision stated. | quote | all |
+| enrolment_end_date | T | date |  | End of enrolment (last animal enrolled), at the precision stated. | quote | all |
+| Complete Date | T | date |  | End of the study (retrospective: date of the last case in the records searched), at the precision stated. | quote | all |
 | n_enrolled | T | integer |  | Dogs enrolled (retrospective: cases included). | quote | all |
 | n_randomised | T | integer |  | Dogs randomised. | quote | study_kind = prospective_trial or other |
 | n_analysed | T | integer |  | Denominator of the primary endpoint. | quote | all |
-| age_min_value | T | number |  | Minimum age. | quote | all |
+| n_screened | T | integer |  | Animals assessed for eligibility before any exclusion (retrospective: records found). | quote | all |
+| n_excluded | T | integer |  | Animals assessed but not enrolled. | quote | all |
+| n_withdrawn | T | integer |  | Animals enrolled who left the study or were removed from the analysis (withdrawn, excluded after enrolment, protocol violation). | quote | all |
+| n_lost_to_follow_up | T | integer |  | Animals enrolled whose outcome is unknown because follow-up stopped. | quote | all |
+| flow_as_written | T | text |  | The passage or figure legend describing how many animals were screened, excluded, enrolled, withdrawn and analysed, verbatim. | location | all |
+| follow_up_as_written | T | text |  | How long and how the animals were followed (e.g. rechecks at days 7, 14, 30, 60 and 365), verbatim. | location | all |
+| sample_size_as_written | T | text |  | The sample-size calculation (expected effect, power, alpha, allocation ratio), verbatim. | location | all |
+| age_min_value | T | number |  | Youngest animal enrolled, as reported (the observed range; entry limits belong in Eligibility Criteria). | quote | all |
 | age_min_unit | T | enum | days, weeks, months, years | Unit of age_min_value. | none | all |
-| age_max_value | T | number |  | Maximum age. | quote | all |
+| age_max_value | T | number |  | Oldest animal enrolled, as reported (the observed range; entry limits belong in Eligibility Criteria). | quote | all |
 | age_max_unit | T | enum | days, weeks, months, years | Unit of age_max_value. | none | all |
 | age_as_written | T | text |  | Age statement, verbatim. | location | all |
-| weight_min_value | T | number |  | Minimum body weight. | quote | all |
+| weight_min_value | T | number |  | Lightest animal enrolled, as reported (the observed range; entry limits belong in Eligibility Criteria). | quote | all |
 | weight_min_unit | T | enum | kg, lb, g | Unit of weight_min_value. | none | all |
-| weight_max_value | T | number |  | Maximum body weight. | quote | all |
+| weight_max_value | T | number |  | Heaviest animal enrolled, as reported (the observed range; entry limits belong in Eligibility Criteria). | quote | all |
 | weight_max_unit | T | enum | kg, lb, g | Unit of weight_max_value. | none | all |
 | weight_as_written | T | text |  | Weight statement, verbatim. | location | all |
 | species | T | pipe_list |  | Species studied, as written. | none | all |
@@ -146,6 +154,7 @@ When unsure, leave the field empty and say why in notes.
 | control_type | C | enum | placebo, active, dose_comparison, no_treatment, historical, none | Comparator. placebo = inactive treatment; active = another active treatment; dose_comparison = other doses of the same treatment only; no_treatment = untreated group; historical = earlier cases or literature; none = no control group. | quote | all |
 | allocation | C | enum | parallel, crossover, single_group | How dogs receive arms. parallel = each dog gets one arm; crossover = each dog gets several arms in sequence; single_group = one arm only. | quote | all |
 | randomised | C | enum | yes, no | Random allocation. yes only when random allocation is stated. | quote | study_kind = prospective_trial or other |
+| randomisation_as_written | T | text |  | How animals were allocated to arms (method, ratio, blocks or strata, concealment), verbatim. | location | study_kind = prospective_trial or other |
 | blinding | C | enum | none, single, double, blinded_unspecified | Blinding. none = open label; single or double as stated; blinded_unspecified = blinded but who is not stated. | quote | study_kind = prospective_trial or other |
 | outcome_instruments | T | pipe_list |  | Scales or scores used, as named (e.g. CMPS-SF\|VAS). | none | all |
 | Sponsor | T | pipe_list |  | Funders or sponsors, as written. | none | all |
@@ -190,11 +199,11 @@ When unsure, leave the field empty and say why in notes.
 | ID | K | text |  | Study key. | none | all |
 | arm_id | K | text |  | Arm key. | none | all |
 | dose_id | K | text |  | &lt;arm_id&gt;-D&lt;n&gt;. | none | all |
-| drug | T | text |  | Drug as written. | none | all |
+| drug | T | text |  | Drug as written. A drug every arm received (a run-in dose, supportive care such as gastroprotectants or antibiotics) is listed in each arm. | none | all |
 | dose_value | T | number |  | Dose (lower end of a range). | quote | all |
 | dose_value_max | T | number |  | Upper end when a range is stated. | quote | all |
 | dose_unit | T | text |  | Unit as written (mg/kg, µg/kg/h, mg/m2, ...). | none | all |
-| route | C | enum | PO, IV, IM, SC, transdermal, topical, local_infiltration, epidural, intra_articular, inhaled, other | Route. As stated; other = any other route. | quote | all |
+| route | C | pipe_list | PO, IV, IM, SC, transdermal, topical, local_infiltration, epidural, intra_articular, inhaled, other | Route. As stated; several routes for the same dose (e.g. IV or PO) as a list; other = any other route. | quote | all |
 | frequency | T | text |  | As written. | none | all |
 | timing | T | text |  | When given, as written (e.g. 30 min before induction). | none | all |
 | dose_duration | T | text |  | How long, as written, including any taper. | none | all |
@@ -208,13 +217,17 @@ When unsure, leave the field empty and say why in notes.
 | ID | K | text |  | Study key. | none | all |
 | source_id | K | text |  | Document the result comes from. | none | all |
 | arm_id | K | text |  | Arm; empty = the whole cohort. | none | all |
+| result_kind | C | enum | outcome, baseline, adverse_event | What kind of number this row holds. outcome = a result for an endpoint, including deaths counted as an endpoint (survival, mortality); baseline = the animals' condition at entry, before treatment (e.g. PCV, Coombs test, severity score, sex, age), in endpoint; adverse_event = a harm (side effect, complication, death reported as a harm or with its cause) with the event or cause in endpoint. Always filled. | none | all |
+| subgroup | T | text |  | The group the row is about when it is not one arm or the whole study, as written (e.g. 'dogs given azathioprine', 'MC + MM groups'); arm_id stays empty. | none | all |
+| population | C | enum | intention_to_treat, per_protocol, other | Analysis population. Only as the document labels the analysis; empty when not stated; other = any other population, named in notes. | none | all |
 | endpoint | T | text |  | Endpoint as written. | none | all |
 | timepoint_value | T | number |  | Timepoint. | none | all |
 | timepoint_unit | C | enum | minutes, hours, days, weeks, months, years | Unit of timepoint_value. As reported. | none | all |
 | timepoint_as_written | T | text |  | Timepoint, verbatim. | none | all |
+| reference_timepoint_as_written | T | text |  | For a change within the same animals: the earlier time compared against, verbatim (e.g. 'before splenectomy'). | none | all |
 | n | T | integer |  | Denominator. | none | all |
 | events | T | integer |  | Numerator (the 12 in 12/20). | none | all |
-| statistic_type | C | enum | proportion, count, mean, median, mean_difference, median_difference, odds_ratio, risk_ratio, hazard_ratio, median_time_to_event, other | Statistic. As reported. | none | all |
+| statistic_type | C | enum | proportion, count, mean, median, mean_difference, median_difference, odds_ratio, risk_ratio, risk_difference, hazard_ratio, median_time_to_event, other | Statistic. As reported. | none | all |
 | value | T | number |  | Number as reported (60 for 60%). | none | all |
 | value_unit | T | text |  | %, days, score points, ... | none | all |
 | variability_type | C | enum | SD, SE, CI95, CI90, IQR, range, other | Spread. As reported. | none | all |
@@ -222,10 +235,15 @@ When unsure, leave the field empty and say why in notes.
 | variability_low | T | number |  | Lower bound (CI, IQR, range). | none | all |
 | variability_high | T | number |  | Upper bound. | none | all |
 | comparison | T | text |  | As written (e.g. high dose vs placebo). | none | all |
-| reference_arm_id | K | text |  | Arm compared against, when stated. | none | all |
+| reference_arm_id | K | text |  | Arm compared against, when stated; empty when the comparison is against pooled arms (name them in comparison). | none | all |
 | p_value | T | text |  | As written, keeping &lt; (e.g. &lt;0.05). | none | all |
+| statistical_test | T | text |  | Test or model as written (e.g. 'log-rank test', 'Cox regression'). | none | all |
+| ae_attributed_to | C | enum | treatment, disease, procedure, unclear | Adverse events: cause as attributed by the authors. What the authors attribute the event to; unclear = they say it is uncertain; empty = not stated. | none | result_kind = adverse_event |
+| ae_grade | T | text |  | Adverse events: severity or grade as written (e.g. 'VCOG-CTCAE grade 2', 'major'). | none | result_kind = adverse_event |
+| ae_fatal | C | enum | died, euthanised, no | Adverse events: whether the event ended in death. As stated; died also covers 'died or was euthanised' when the document does not separate them. | none | result_kind = adverse_event |
 | as_written | T | text |  | The verbatim sentence or table row (this is the quote). | none | all |
 | location | T | text |  | Section / table / page. | none | all |
+| notes | N | text |  | Only ambiguity, or what a coded field could not say (e.g. which population 'other' is). | none | all |
 
 ## sites
 
@@ -259,6 +277,7 @@ When unsure, leave the field empty and say why in notes.
 | arm_id | K | text |  | Arm; empty = the whole study. | none | all |
 | Breed | T | text |  | As written (including 'mixed breed'). | none | all |
 | n_dogs | T | integer |  | Number of dogs of this breed. | quote | all |
+| percent | T | number |  | Share of dogs of this breed, in %, only when the count is not given. | quote | all |
 
 ## definitions
 
@@ -331,7 +350,6 @@ Stored in `topic_fields` with topic = `cie`.
 | concurrent_diet | T | text |  | Diet given alongside glucocorticoids, verbatim. | location | all |
 | prior_diet_trial | T | text |  | Diet trial before entry, verbatim. | location | all |
 | prior_antibiotic_trial | T | text |  | Antibiotic trial before entry, verbatim. | location | all |
-| follow_up_as_written | T | text |  | Follow-up, verbatim. | location | all |
 | user_type | C | enum | new_users, prevalent_users, mixed, unclear | Treatment status at entry. new_users = enter at the start of glucocorticoid treatment; prevalent_users = already on treatment at entry. | quote | all |
 
 ## topic: imha
@@ -344,7 +362,7 @@ Stored in `topic_fields` with topic = `imha`.
 | immunosuppressive_protocol | T | text |  | Immunosuppressive protocol, verbatim. | location | all |
 | antithrombotic_protocol | T | text |  | Antithrombotic protocol, verbatim. | location | all |
 | transfusion_trigger | T | text |  | What triggers a transfusion, verbatim. | location | all |
-| entry_pcv | T | text |  | PCV at entry, verbatim. | location | all |
+| entry_pcv | T | text |  | PCV (or haematocrit, saying which) at entry, verbatim. | location | all |
 
 ## topic: surgical_pain
 

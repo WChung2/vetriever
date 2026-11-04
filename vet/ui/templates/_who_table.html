@@ -1,0 +1,15 @@
+{% if not rows %}
+<p class="empty">No author records{% if topic %} for this search{% endif %} yet (<code>vet who</code> fetches them, free).</p>
+{% else %}
+<div class="table-wrap">
+<table class="data">
+  <thead><tr><th class="num">#</th><th>Institution</th><th>Countries</th><th class="num">Papers led</th><th>Lead authors</th></tr></thead>
+  <tbody>
+  {% for r in rows %}
+  <tr><td class="num sub">{{ loop.index }}</td><td>{{ r.root_name }}</td><td class="nowrap">{{ r.countries | replace("|", ", ") }}</td><td class="num"><b>{{ r.papers }}</b></td>
+    <td>{{ r.names[:3] | join(", ") }}{% if r.names | length > 3 %} <span class="sub-inline">+ {{ r.names | length - 3 }} more</span>{% endif %}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}

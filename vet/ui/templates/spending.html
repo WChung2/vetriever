@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% from "_head.html" import page_head %}
+{% block title %}Spending{% endblock %}
+{% block pane %}
+{{ page_head("Spending", "model calls, all searches") }}
+<main class="history"><div class="history-inner">
+<p class="lede">Every model call is logged in <code>corpus/spend.csv</code>. Paid calls stop before the cap.</p>
+<div class="cards three">
+  <div class="card stat"><span class="stat-label">Spent</span><b class="stat-big">{{ spend.total | usd }}</b>
+    <progress value="{{ spend.share }}" max="1"></progress><span class="sub">of the {{ spend.cap | usd }} cap · {{ spend.calls | thousands }} calls</span></div>
+  <div class="card"><h2>By step</h2><table class="data compact"><tbody>
+    {% for k, v in spend.by_step %}<tr><td>{{ k }}</td><td class="num">{{ v | usd }}</td></tr>{% endfor %}</tbody></table></div>
+  <div class="card"><h2>By model</h2><table class="data compact"><tbody>
+    {% for k, v in spend.by_model %}<tr><td>{{ k }}</td><td class="num">{{ v | usd }}</td></tr>{% endfor %}</tbody></table></div>
+</div>
+<section class="section">
+  <h2>By day</h2>
+  <table class="data compact narrow"><tbody>
+    {% for k, v in spend.by_day %}<tr><td>{{ k }}</td><td class="num">{{ v | usd }}</td></tr>{% endfor %}</tbody></table>
+</section>
+</div></main>
+{% endblock %}

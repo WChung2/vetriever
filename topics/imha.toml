@@ -1,8 +1,148 @@
-# Topic brief: immune-mediated haemolytic anaemia (IMHA) in dogs. DRAFT: only the question and
-# the extra fields so far; the Planner (stage 2) drafts the search sections.
+# Topic imha: written by `vet plan` on 2026-11-02 from the vet's words
+# ("IMHA in dogs; planning a trial of a new immunosuppressive; treatments, doses, survival, relapse") and 2 Planner round(s); the
+# rounds are in corpus/plan/imha/. Sources: vet, paper, answer, mesh, suggestion.
 
-question = """Treatment of immune-mediated haemolytic anaemia in dogs: immunosuppressive and
-antithrombotic protocols, transfusion, survival and relapse."""
+question = "What are the reported immunosuppressive treatments, dosages, survival outcomes, and relapse rates in dogs with immune-mediated hemolytic anemia, Evans syndrome, or precursor-targeted immune-mediated anemia?"
+known = ["21489250", "31888626", "35801263", "38961558"]
+
+[screen]
+species = "dogs"
+condition = "immune-mediated hemolytic anemia"
+also_called = ["IMHA", "AIHA", "immune-mediated haemolytic anaemia", "autoimmune hemolytic anemia", "autoimmune haemolytic anaemia", "Cold Agglutinin Disease"]
+related = ["Evans syndrome", "Precursor-targeted immune-mediated anemia (PIMA)", "Secondary immune-mediated hemolytic anemia", "Immune-mediated thrombocytopenia (ITP)"]
+treatments = ["immunosuppressive", "corticosteroids (prednisone, prednisolone, dexamethasone)", "cyclosporine", "mycophenolate mofetil", "azathioprine", "leflunomide", "human intravenous immunoglobulin (hIVIG)", "therapeutic plasma exchange"]
+
+[[terms]]
+block = "species"
+kind = "mesh"
+term = "Dogs"
+source = "suggestion"
+evidence = "dogs"
+
+[[terms]]
+block = "species"
+kind = "text"
+term = "dogs"
+source = "vet"
+evidence = "dogs"
+
+[[terms]]
+block = "species"
+kind = "text"
+term = "dog"
+source = "suggestion"
+evidence = "dogs"
+
+[[terms]]
+block = "species"
+kind = "text"
+term = "canine*"
+source = "suggestion"
+evidence = "canine"
+
+[[terms]]
+block = "species"
+kind = "text"
+term = "canis"
+source = "suggestion"
+evidence = "canis"
+
+[[terms]]
+block = "condition"
+kind = "mesh"
+term = "Anemia, Hemolytic, Autoimmune"
+source = "suggestion"
+evidence = "IMHA"
+
+[[terms]]
+block = "condition"
+kind = "text"
+term = "IMHA"
+source = "vet"
+evidence = "IMHA"
+
+[[terms]]
+block = "condition"
+kind = "text"
+term = "AIHA"
+source = "suggestion"
+evidence = "AIHA"
+
+[[terms]]
+block = "condition"
+kind = "text"
+term = "immune-mediated hemolytic anemia"
+source = "suggestion"
+evidence = "IMHA"
+
+[[terms]]
+block = "condition"
+kind = "text"
+term = "immune-mediated haemolytic anaemia"
+source = "suggestion"
+evidence = "IMHA"
+
+[[terms]]
+block = "condition"
+kind = "text"
+term = "autoimmune hemolytic anemia"
+source = "suggestion"
+evidence = "IMHA"
+
+[[terms]]
+block = "condition"
+kind = "text"
+term = "autoimmune haemolytic anaemia"
+source = "suggestion"
+evidence = "IMHA"
+
+[[terms]]
+block = "condition"
+kind = "text"
+term = "Evans syndrome"
+source = "answer"
+evidence = "Include Evans syndrome"
+
+[[terms]]
+block = "condition"
+kind = "text"
+term = "precursor-targeted immune-mediated anemia"
+source = "answer"
+evidence = "Include PIMA and non-regenerative immune-mediated anemia"
+
+[[terms]]
+block = "condition"
+kind = "text"
+term = "PIMA"
+source = "answer"
+evidence = "Include PIMA and non-regenerative immune-mediated anemia"
+
+[[terms]]
+block = "condition"
+kind = "text"
+term = "Cold Agglutinin Disease"
+source = "mesh"
+evidence = "other name of MeSH Anemia, Hemolytic, Autoimmune"
+
+[[targets]]
+item = "treatments"
+source = "vet"
+
+[[targets]]
+item = "doses"
+source = "vet"
+
+[[targets]]
+item = "survival"
+source = "vet"
+
+[[targets]]
+item = "relapse"
+source = "vet"
+
+[[targets]]
+item = "clinical trial"
+source = "vet"
 
 # Extra fields for this topic, on top of the core codebook; same columns as codebook.csv.
 [[fields]]
@@ -40,4 +180,4 @@ field = "entry_pcv"
 kind = "T"
 type = "text"
 evidence = "location"
-description = "PCV at entry, verbatim."
+description = "PCV (or haematocrit, saying which) at entry, verbatim."

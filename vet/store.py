@@ -108,6 +108,8 @@ class Store:
                 for c in self.cb.columns(t):
                     if c not in have:
                         self.db.execute(f'ALTER TABLE "{t}" ADD COLUMN "{c}" TEXT NOT NULL DEFAULT \'\'')
+                if "ID" in self.cb.columns(t):
+                    self.db.execute(f'CREATE INDEX IF NOT EXISTS "{t}_ID" ON "{t}" ("ID")')
             self.db.execute("CREATE TABLE IF NOT EXISTS meta (name TEXT PRIMARY KEY, value TEXT)")
 
     def close(self):
@@ -118,6 +120,25 @@ class Store:
         names = ", ".join(f'"{c}"' for c in cols)
         return [dict(zip(cols, r)) for r in
                 self.db.execute(f'SELECT {names} FROM "{table}" ORDER BY rowid')]
+
+    def rows_of(self, table: str, ids: set, docs: set) -> list[dict]:
+        """The rows of these studies, and the rows without a study that belong to these
+        documents (a source, a consensus definition)."""
+        cols = self.cb.columns(table)
+        names = ", ".join(f'"{c}"' for c in cols)
+        wanted = []
+        if "ID" in cols:
+            wanted.append(("ID", sorted(ids), ""))
+        if "source_id" in cols:
+            wanted.append(("source_id", sorted(docs), ' AND "ID" = \'\'' if "ID" in cols else ""))
+        out = []
+        for col, values, extra in wanted:
+            for k in range(0, len(values), 500):
+                part = values[k:k + 500]
+                marks = ", ".join("?" for _ in part)
+                out += [dict(zip(cols, r)) for r in self.db.execute(
+                    f'SELECT {names} FROM "{table}" WHERE "{col}" IN ({marks}){extra}', part)]
+        return out
 
     def tables(self) -> dict[str, list[dict]]:
         return {t: self.rows(t) for t in TABLES}
@@ -153,14 +174,27 @@ class Store:
         layout_values = _plain(sum((_values(name, rows) for name, rows in t.items()), Counter()))
         rep.values_in, rep.values_dropped = sum(raw_values.values()), sum(dropped.values())
         rep.missing = raw_values - layout_values - dropped     # lost while changing layout
+        return self.import_tables(t, rep, where=str(folder))
+
+    def import_tables(self, tables: dict, rep: ImportReport | None = None,
+                      where: str = "the tables") -> ImportReport:
+        """Add tables in today's layout ({table: [row dicts]}), in one transaction: all of
+        them or nothing. Study IDs are renumbered VET-<n> from the database's count."""
+        unknown = sorted(set(tables) - set(TABLES))
+        if unknown:
+            raise ValueError(f"nothing imported: {unknown} are not codebook tables")
+        t = {name: tables.get(name, []) for name in TABLES}
+        if rep is None:
+            rep = ImportReport()
+            rep.values_in = sum(sum((_values(n, rows) for n, rows in t.items()), Counter()).values())
         for name, rows in t.items():
             rep.rows_in[name] = len(rows)
         in_folder = {r["ID"] for r in t["studies"]}
         orphans = sorted({r["ID"] for rows in t.values() for r in rows
                           if r.get("ID") and r["ID"] not in in_folder})
         if orphans:
-            raise ValueError(f"nothing imported: rows refer to studies that {folder}/studies.csv "
-                             f"does not have, e.g. {orphans[:3]}")
+            raise ValueError(f"nothing imported: rows refer to studies that {where} has no "
+                             f"studies row for, e.g. {orphans[:3]}")
 
         # documents: match each one against the stored ones (and the ones before it here)
         known_ids = {}
@@ -237,16 +271,13 @@ class Store:
                                         [[r.get(c, "") for c in cols] for r in rows])
                     rep.rows_added[name] = len(rows)
         except sqlite3.IntegrityError as e:
-            raise ValueError(f"nothing imported: two rows in {folder} share a key ({e})") from e
+            raise ValueError(f"nothing imported: two rows in {where} share a key ({e})") from e
 
         # read back what was stored and compare value by value, column by column
         new_ids, new_docs = set(id_map.values()), set(rep.new_documents)
         stored = Counter()
         for name in TABLES:
-            mine = [r for r in self.rows(name)
-                    if (r.get("ID") in new_ids if r.get("ID") else r.get("source_id") in new_docs)
-                    or (name == "sources" and r["source_id"] in new_docs)]
-            stored.update(_values(name, mine))
+            stored.update(_values(name, self.rows_of(name, new_ids, new_docs)))
         rep.values_stored = sum(stored.values())
         rep.values_skipped = sum(values_skipped.values())
         rep.missing += values_in - stored                      # lost while storing
@@ -271,11 +302,19 @@ def _current_layout(raw: dict, cb: Codebook, rep: ImportReport) -> tuple[dict, C
     other table or column the codebook doesn't have is dropped and reported."""
     t = {name: [] for name in TABLES}
     dropped = Counter()
+    promoted = {}           # (ID, column) of an ext_* column that is now a studies field
     for name, (header, rows) in raw.items():
         if name in LEGACY_TOPIC_TABLES:
             topic = LEGACY_TOPIC_TABLES[name]
-            t["topic_fields"] += [{"ID": r["ID"], "topic": topic, "field": c, "value": v}
-                                  for r in rows for c, v in r.items() if c != "ID" and v]
+            for r in rows:
+                for c, v in r.items():
+                    if c == "ID" or not v:
+                        continue
+                    if cb.field("studies", c):
+                        promoted[r["ID"], c] = v
+                    else:
+                        t["topic_fields"].append({"ID": r["ID"], "topic": topic, "field": c,
+                                                  "value": v})
             continue
         cols = set(cb.columns(name)) if name in TABLES else set()
         for c in header:
@@ -289,8 +328,14 @@ def _current_layout(raw: dict, cb: Codebook, rep: ImportReport) -> tuple[dict, C
         if name == "studies":
             t["study_topics"] += [{"ID": r["ID"], "topic": r["indication"]}
                                   for r in rows if r.get("indication")]
+    for r in t["studies"]:
+        for c in r:
+            if not r[c] and (r["ID"], c) in promoted:
+                r[c] = promoted[r["ID"], c]
     for r in t["evidence"] + t["conflicts"]:
-        if r["table"] in LEGACY_TOPIC_TABLES:
+        if r["table"] in LEGACY_TOPIC_TABLES and cb.field("studies", r["field"]):
+            r["table"], r["row_key"] = "studies", ""
+        elif r["table"] in LEGACY_TOPIC_TABLES:
             r["row_key"] = LEGACY_TOPIC_TABLES[r["table"]]
             r["table"] = "topic_fields"
     # the topic now comes from the search, not from the document, so evidence for

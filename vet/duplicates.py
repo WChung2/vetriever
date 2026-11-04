@@ -84,8 +84,20 @@ def _same_trial(t: dict) -> list[Issue]:
         if _person(r["Name"]):
             people[r["ID"]].append((_person(r["Name"]), r["Name"]))
     studies = {r["ID"]: r for r in t["studies"]}
+    # only studies that share an enrolment count, arm sizes or a name word can match below,
+    # so compare those pairs instead of every pair (which grows with the square of studies)
+    buckets = defaultdict(set)
+    for sid, s in studies.items():
+        if s["n_enrolled"]:
+            buckets["n", s["n_enrolled"]].add(sid)
+        if len(arm_sizes[sid]) > 1:
+            buckets["arms", tuple(sorted(arm_sizes[sid]))].add(sid)
+        for p, _ in people[sid]:
+            for word in p:
+                buckets["person", word].add(sid)
+    pairs = {pair for ids in buckets.values() for pair in combinations(sorted(ids), 2)}
     out = []
-    for a, b in combinations(sorted(studies), 2):
+    for a, b in sorted(pairs):
         if primary.get(a) == primary.get(b):
             continue
         shared = drugs[a] & drugs[b]

@@ -5,9 +5,10 @@ not lab-animal research) from the published literature. First track: post-surgic
 dogs. Agents search and read; code checks every value. Each
 value in the tables comes with a verbatim quote from its source document.
 
-Status: **stage 1 (foundation) done.** The codebook, topics, the database with import and
-export, the checker, the duplicate review, the literature connections and the Gemini wrapper
-with its spending cap are in place. The Planner agent comes next (stage 2).
+Status: **stage 2 (the agents) in test.** On top of stage 1 (codebook, topics, database,
+checker, literature connections, Gemini wrapper with its spending cap): the Planner, search,
+screening, the search ⇄ review loop, the vet's list, full texts and who-and-where; the
+extraction runner is being built.
 
 ## How it fits together
 
@@ -26,10 +27,14 @@ with its spending cap are in place. The Planner agent comes next (stage 2).
 - `codebook.csv`: one row per field. It drives the empty tables, the allowed values, the
   checks and the prompts. Change a field by editing its row, then run `vet templates`.
 - `topics/<topic>.toml`: one file per topic a vet asks about: the question, search terms,
-  screening rules, coverage targets, and the extra fields to extract for that topic.
+  what screening looks for (`[screen]`), coverage targets, and the extra fields to extract
+  for that topic.
+- `prompts/`: the instructions given to the models. They name no species or disease: code
+  fills in the topic's parts from `topics/<topic>.toml`.
 - `settings.toml`: models, spending cap and prices. Secrets go in `.env` (copy
   `.env.example`).
 - `codebook.md`: the readable version (generated, don't edit).
+- `decisions.md` (kept on this computer, not published: it holds results of real runs): the calls made without a veterinary expert, listed for review.
 - `vocab/countries.txt`: country names, taken from the app's own ClinicalTrials.gov data.
 - `templates/`: the 14 empty tables (header row only).
 - `corpus/`: everything a run produces, kept local: `vetriever.db` (the database), `docs/`
@@ -59,14 +64,31 @@ uv run vet import <folder>      # add a folder of tables to the database
 uv run vet check                # check the database, and list possible duplicates
 uv run vet check corpus/out/PMID31234567   # check one document's folder
 uv run vet export               # write the database out as CSV (corpus/merged)
+uv run vet plan <topic> "<the vet's words>"   # Planner round 1 (paid); then --answers <file>, --start
+uv run vet search <topic>       # search, screen and review until a round finds nothing new (paid)
+uv run vet list <topic>         # the kept list for the vet; --approve-all approves it
+uv run vet fetch <PMID or DOI>… # full texts into corpus/docs; --from <file>, or --topic <topic>
+uv run vet who --topic <topic>  # authors and institutions of the approved papers (OpenAlex, free)
+uv run vet ui                   # the screens in your browser, on this Mac only (free)
 uv run vet ping                 # one tiny live call to each literature service (free)
 uv run pytest                   # tests (free: no API calls)
 ./scripts/check.sh              # everything CI checks: run before every push
+./scripts/smoke.sh              # the real services on known papers (needs keys and VPN)
 ```
+
+## Full texts
+
+`vet fetch` tries legal routes from free to subscription: PubMed Central, a free copy listed
+by OpenAlex, then the publisher's text-mining API (Elsevier with `ELSEVIER_API_KEY`, Wiley
+with `WILEY_TDM_TOKEN`, or a link the publisher registered at Crossref, e.g. Springer).
+The subscription routes use the institution's licence: they work only on its network or VPN
+and only for non-commercial research. Publisher web pages are never scraped. A file is kept
+only if it is the whole paper (no one-page previews) and the record's title is in it; the
+rest is listed in `corpus/reports/to_download.csv` with a link, to download by hand.
 
 ## Checks (CI)
 
-`scripts/check.sh` runs five checks, and GitHub Actions runs the same script on a clean
+`scripts/check.sh` runs six checks, and GitHub Actions runs the same script on a clean
 machine (Python 3.12 and 3.13) for every push and pull request:
 
 1. installed packages match `uv.lock`;
@@ -75,7 +97,16 @@ machine (Python 3.12 and 3.13) for every push and pull request:
 4. `templates/` and `codebook.md` match `codebook.csv`;
 5. nothing private would be published: no `.env`, nothing from `corpus/` or `examples/`, no
    data file (the only tables allowed are `codebook.csv` and the empty `templates/`), no
-   Google-style API key, and none of the values in your own `.env`.
+   Google-style API key, and none of the values in your own `.env`;
+6. the screens for real (`scripts/ui_smoke.py`), on made-up data in a temporary folder:
+   - `vet ui` starts and every page answers with its security headers;
+   - your machine's network address and other host names are refused;
+   - htmx is the published release;
+   - in headless Chrome no page has a blocked style or script, or a script error (skipped
+     where Chrome is missing);
+   - a second `vet ui` on a taken port stops with a message.
+
+   It stops only the server it started.
 
 ## Sources and safety
 
@@ -84,6 +115,24 @@ Unpaywall, and the FDA and EMA veterinary pages. Code makes every call; the mode
 write queries and fill fixed answer forms, so a web page can't make them do anything.
 Requests are paced and identify the project. Gemini calls stop before passing the
 spending cap in `settings.toml`, and every call can be audited in `corpus/calls/`.
+
+## The screens (`vet ui`)
+
+A temporary local front end for one user, laid out as a chat. On the left is a dashboard of
+searches, each with its five steps (plan, search, approve, full text, extract). On the right
+is the chat, or a search's history in four tabs: the conversation (earlier command-line runs
+rebuilt from their saved Planner rounds and logs), the records to approve, the studies built
+(clinical_ai's essentials: status, species, condition, intervention, enrolled, sites, the KOLs
+by name and the sponsor; inclusion and exclusion criteria; results and source text a click
+away), and who and where. KOLs are a paper's first and last authors, or a trial's study
+director; Who & where ranks institutions by the papers they led. The Review tab (your decisions:
+approve, reject, or keep a dropped article anyway) opens with how
+the search was built (the vet's words as typed, the agreed question, the expanded terms and
+the exact queries run), every count explains itself, and each record says how it was found. It is a thin layer (`vet/ui/`,
+Jinja templates and htmx) over plain functions in `vet/views.py` and `vet/chat.py`, so another
+front end can reuse them. The chat box opens to the Planner in the next step. It makes no model calls and loads nothing from the internet. It listens
+on 127.0.0.1 only, answers only 127.0.0.1 or localhost, and accepts a change only from its
+own pages with their token. Looking at a page opens the database read-only.
 
 ## What is shared and what stays local
 

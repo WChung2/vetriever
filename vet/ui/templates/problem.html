@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% from "_head.html" import page_head %}
+{% block title %}{{ status }}{% endblock %}
+{% block pane %}
+{{ page_head("Not found" if status == 404 else "Not allowed" if status == 403 else "Something went wrong") }}
+<main class="history"><div class="history-inner">
+  <p class="lede">{{ detail }}</p>
+  <p><a class="button" href="/">Back to the start</a></p>
+</div></main>
+{% endblock %}

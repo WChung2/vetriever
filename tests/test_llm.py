@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from vet.llm import LLM, BudgetExceeded, FakeGemini, Ledger
+from vet.llm import LLM, BudgetExceeded, FakeGemini, Gemini, Ledger
 
 SCHEMA = {"type": "object", "required": ["decision", "reason"],
           "properties": {"decision": {"type": "string", "enum": ["include", "exclude"]},
@@ -48,6 +48,34 @@ def test_calls_are_saved_per_document_and_can_be_switched_off(tmp_path):
     assert len(saved) == 1 and json.loads(saved[0].read_text())["prompt"] == "text"
     llm(tmp_path / "off", save=False).call("structure", "text", SCHEMA, doc="PMID1")
     assert not (tmp_path / "off" / "calls").exists()
+
+
+def test_a_model_price_can_expire_before_the_others(tmp_path):
+    m = llm(tmp_path)
+    m.fake = False                      # the expiry check guards paid calls only
+    m.cfg = {**m.cfg, "prices": {**m.cfg["prices"], "valid_until": "2999-01-01",
+                                 "soon": {"input": 1, "output": 1, "valid_until": "2000-01-01"}}}
+    with pytest.raises(BudgetExceeded, match="price of soon .* expired on 2000-01-01"):
+        m.price("soon")
+    assert m.price("gemini-3.8-flash")["input"] > 0     # the others follow the block's date
+
+
+def test_none_sends_no_thinking_setting():
+    from types import SimpleNamespace as NS
+    seen = []
+
+    class Models:
+        def generate_content(self, model, contents, config):
+            seen.append(config.thinking_config)
+            return NS(usage_metadata=NS(prompt_token_count=1, candidates_token_count=1,
+                                        thoughts_token_count=None),
+                      candidates=[NS(content=NS(parts=[NS(text="{}", thought=False)]))])
+
+    g = Gemini.__new__(Gemini)          # no key, no network: a stand-in client
+    g.client = NS(models=Models())
+    for level in ("none", "medium"):
+        assert g.generate("m", "", "p", {"type": "object"}, level, 10)[0] == "{}"
+    assert seen[0] is None and seen[1] is not None
 
 
 def test_unknown_model_is_refused(tmp_path):

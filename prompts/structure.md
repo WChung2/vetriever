@@ -20,12 +20,14 @@ make one up.
 - Transcribed fields: copy the value as the document states it, with the same words,
   spelling, language and symbols (≥, µg, °C). Don't paraphrase, translate, summarise or fix
   typos. For long text fields, copy the relevant sentences.
+- A field that copies text (named …as_written or …_verbatim) holds one passage, or several
+  joined by " … "; code finds each passage in the document.
 - Coded fields: choose one listed value by the field's rule. If the document doesn't support
   a value, leave the field empty.
 - Notes: your own words, short. Say why an expected field is empty or uncertain.
-- Numbers: digits and a dot only; no units, thousands separators, ~ or ≥. If the document
-  gives only an approximate value or a range where one number is expected, leave it empty
-  and say so in notes.
+- Numbers: digits, a dot and a leading minus only (-16.4); no units, thousands separators, ~
+  or ≥. If the document gives only an approximate value or a range where one number is
+  expected, leave it empty and say so in notes.
 - Dates: ISO, at the precision stated: YYYY, YYYY-MM or YYYY-MM-DD.
 - Lists: items separated by | with no spaces around it.
 - Eligibility Criteria: "Inclusion Criteria:", a blank line, one "* " line per criterion, a

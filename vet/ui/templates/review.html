@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% from "_head.html" import topic_head, funnel %}
+{% block title %}{{ s.title }} · review{% endblock %}
+
+{% block pane %}
+{% set lists = {
+  "to_review": ("To review", "Articles the screening kept, waiting for your decision. Approve the ones worth reading in full; reject the rest."),
+  "approved": ("Approved by you", "The articles you approved. Their full texts are downloaded next. Undo any you changed your mind about."),
+  "rejected": ("Rejected by you", "The articles you rejected. They go no further; undo one to review it again."),
+  "dropped": ("Dropped by screening", "Judged off topic from the abstract, each with its reason and the sentence it rests on. If one belongs in, keep it anyway."),
+  "overviews": ("Overviews & guidelines", "Review articles, guidelines and consensus statements: not studies, so not read into the database. The search followed their references to find more studies; open them as background."),
+  "aside": ("Letters & errata", "Letters, comments and errata, set aside without screening."),
+} %}
+{{ topic_head(name, s, "review", counts) }}
+<main class="history"><div class="history-inner">
+
+<section class="card built" aria-label="How this search was built">
+  <h2>How this search was built</h2>
+  <dl class="kv wide">
+    {% if b.words %}<dt>You asked</dt><dd><q>{{ b.words }}</q></dd>{% endif %}
+    {% if b.question %}<dt>Understood as</dt><dd>{{ b.question }}
+      <span class="sub">The Planner's reading of your words{% if b.rounds %}, agreed after {{ b.rounds }} round{{ "" if b.rounds == 1 else "s" }}{% if b.started %} on {{ b.started | day }}{% endif %}{% endif %}. It is used to judge each paper's abstract; it is not what PubMed was sent.</span></dd>{% endif %}
+    {% if b.blocks %}<dt>Searched for</dt><dd>
+      {% for block, terms in b.blocks.items() %}
+      {% if not loop.first %}<p class="and">AND</p>{% endif %}
+      <p class="block-line"><span class="check-name">{{ block }}</span>
+        {% for t in terms %}<span class="term" title="{{ t.kind }}{% if t.source %} · from {{ sources.get(t.source, t.source) }}{% endif %}">{{ t.term }}{% if t.hits is defined and t.hits is not none %} <small>{{ t.hits | thousands }}</small>{% endif %}</span>{% if not loop.last %} <span class="or">or</span> {% endif %}{% endfor %}</p>
+      {% endfor %}
+      <p class="sub">This is the search PubMed was sent: any word of each block, and every block.{% if b.blocks.values() | first | selectattr("hits", "defined") | list %} The small number after a word is how many PubMed records it finds on its own.{% endif %}</p>
+      {% if b.first %}<p class="found-line">{% for q in b.first %}{{ "In " if loop.first else "in " }}{{ "PubMed" if q.service == "pubmed" else "Europe PMC" }} this found <b>{{ q.hits | thousands }}</b> records{% if not loop.last %}; {% endif %}{% endfor %}{% if b.first[0].date %}, on {{ b.first[0].date | day }}{% endif %}.</p>{% endif %}
+    </dd>{% endif %}
+    {% if b.added_text %}<dt>Review rounds added</dt><dd>{{ b.added_text }}</dd>{% endif %}
+  </dl>
+  {% if b.first or b.later %}
+  <details class="explain"><summary>The exact queries ({{ (b.first + b.later) | length }})</summary>
+    <ol class="queries">
+      {% for q in b.first + b.later %}
+      <li><span class="sub">round {{ q.round }} · {{ "PubMed" if q.service == "pubmed" else "Europe PMC" }} · {{ q.hits | thousands }} records</span><code class="query">{{ q.query }}</code></li>
+      {% endfor %}
+    </ol>
+  </details>
+  {% endif %}
+</section>
+
+{{ funnel(counts) }}
+
+<h2 class="step-title">Your review</h2>
+<nav class="tabs sub-tabs" aria-label="Lists">
+{% for v, pair in lists.items() %}
+  <a href="/topics/{{ name }}/records?view={{ v }}" {% if data.view == v %}aria-current="page"{% endif %}>{{ pair[0] }} <span class="count">{{ data.tabs[v] | thousands }}</span></a>
+{% endfor %}
+</nav>
+<p class="list-says">{{ lists[data.view][1] }}</p>
+
+<form class="filters" action="/topics/{{ name }}/review" method="get"
+      hx-get="/topics/{{ name }}/review" hx-target="#records" hx-swap="outerHTML" hx-push-url="true"
+      hx-trigger="input changed delay:300ms from:input[name=q], change from:select">
+  <input type="hidden" name="view" value="{{ data.view }}">
+  <label class="search"><span class="sr">Search titles and summaries</span>
+    <input type="search" name="q" value="{{ q }}" placeholder="Search titles and summaries" autocomplete="off"></label>
+  <label><span class="sr">Flag</span>
+    <select name="flag">
+      <option value="">All flags</option>
+      {% for f, n in data.flags | dictsort %}
+      <option value="{{ f }}" {% if f == flag %}selected{% endif %}>{{ flag_names.get(f, f | label) }} ({{ n }})</option>
+      {% endfor %}
+    </select></label>
+  <label><span class="sr">Design</span>
+    <select name="design">
+      <option value="">All designs</option>
+      {% for d, n in data.designs | dictsort %}
+      <option value="{{ d }}" {% if d == design %}selected{% endif %}>{{ designs.get(d, d | label) }} ({{ n }})</option>
+      {% endfor %}
+    </select></label>
+  <noscript><button type="submit" class="button">Filter</button></noscript>
+</form>
+
+{% if data.view == "to_review" and data.tabs.to_review %}
+<form class="bulk" method="post" action="/topics/{{ name }}/decide" hx-post="/topics/{{ name }}/decide"
+      hx-confirm="Approve all {{ data.tabs.to_review }} articles waiting for your review? You can undo any of them.">
+  <input type="hidden" name="csrf" value="{{ token }}">
+  <input type="hidden" name="all" value="1"><input type="hidden" name="action" value="approve">
+  <input type="hidden" name="view" value="to_review">
+  <span><b>{{ data.tabs.to_review | thousands }}</b> article{{ "" if data.tabs.to_review == 1 else "s" }} wait{{ "s" if data.tabs.to_review == 1 else "" }} for your decision{% if data.tabs.approved %}; {{ data.tabs.approved | thousands }} approved so far{% endif %}.</span>
+  <button class="button" type="submit">Approve all {{ data.tabs.to_review | thousands }}</button>
+</form>
+{% elif data.view == "to_review" and data.tabs.approved %}
+<p class="bulk all-done"><span>✓ Nothing waits for your review: {{ data.tabs.approved | thousands }} approved{% if data.tabs.rejected %}, {{ data.tabs.rejected | thousands }} rejected{% endif %}.</span></p>
+{% elif data.view == "approved" and data.tabs.approved %}
+<form class="bulk" method="post" action="/topics/{{ name }}/decide" hx-post="/topics/{{ name }}/decide"
+      hx-confirm="Undo all {{ data.tabs.approved }} approvals of this search? They go back to To review.">
+  <input type="hidden" name="csrf" value="{{ token }}">
+  <input type="hidden" name="all" value="1"><input type="hidden" name="action" value="undo">
+  <input type="hidden" name="view" value="approved">
+  <span>{{ data.tabs.approved | thousands }} approved{% if not data.tabs.to_review %}: your review of this search is done{% endif %}.</span>
+  <button class="button ghost danger" type="submit">Undo all approvals</button>
+</form>
+{% endif %}
+
+{% include "_records.html" %}
+</div></main>
+{% endblock %}

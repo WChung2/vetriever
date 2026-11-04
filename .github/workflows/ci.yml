@@ -17,7 +17,7 @@ concurrency:                    # a newer push cancels the older run of the same
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -33,5 +33,7 @@ jobs:
           version: "0.11.13"
           python-version: ${{ matrix.python }}
           enable-cache: true
-      - name: Lockfile, lint, tests, generated files, secrets
+      # step 6 starts `vet ui` on made-up data and opens every page in the runner's Google
+      # Chrome (installed on ubuntu-latest); it is skipped, not failed, where Chrome is missing
+      - name: Lockfile, lint, tests, generated files, secrets, the screens in a browser
         run: ./scripts/check.sh

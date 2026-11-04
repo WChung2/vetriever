@@ -1,23 +1,44 @@
 # Settings you may change. Secrets (API keys, contact email) go in .env, never here.
 
 [models]
-screen = "gemini-3.5-flash-lite"   # title/abstract screening: cheap, many calls
+plan = "gemini-3.8-flash"         # the Planner: the vet's words into the topic file
+screen = "gemini-3.8-flash"        # title/abstract screening (benchmark 2026-11-03, decisions 38)
 structure = "gemini-3.8-flash"     # reading one document into the tables
 review = "gemini-3.8-flash"        # search refinement and checking quotes against rules
 
-[thinking]                          # minimal | low | medium | high
-screen = "low"
-structure = "low"
+[thinking]                          # none | minimal | low | medium | high
+                                    # (none: no setting sent; for models that refuse one)
+plan = "high"
+screen = "low"        # benchmark 2026-11-03 on 120 records: "low" dropped 2 relevant records,
+                     # "medium" 4; $0.98 against $2.30 per 1,000 records, 4x faster
+structure = "low"    # 3.8-flash doesn't think at "low"; "medium" tested 2026-11-02: 3x the cost,
+                     # runaway thinking in the arms step (15-18k tokens), no more results found
 review = "medium"
 
 [spending]
-cap_usd = 5.00          # hard stop for everything in corpus/spend.csv; raised per phase, with your OK
+cap_usd = 15.00         # hard stop for everything in corpus/spend.csv; raised per phase, with your OK
 max_output_tokens = 16384
+# extraction answers are long (a results table can be 50 rows), and thinking counts too
+max_output_tokens_by_step = { structure = 32768 }
 save_calls = true       # keep every prompt and answer in corpus/calls/ for auditing
 
-# USD per 1M tokens, paid tier, from https://ai.google.dev/gemini-api/docs/pricing
-# (checked 2026-10-28). Thinking tokens are billed as output. Paid calls are refused after
-# valid_until until someone re-checks the prices and updates this block.
+[pipeline]
+plan_rounds = 3          # the Planner revises at most this many times
+plan_papers = 7          # search results shown to the vet in each Planner round
+screen_budget = 1500     # records screened per topic before the Planner asks to narrow
+review_rounds = 4        # search ⇄ review rounds at most
+max_terms = 6            # term changes per review round
+max_follow = 8           # records whose references, citing papers or similar articles are followed
+max_queries = 3          # extra Europe PMC queries per review round
+term_max_new = 300       # a new term adding more records than this goes back as too broad
+term_min_kept = 0.10     # a new term stays only if this share of its own records is kept
+round_max_new = 200      # new records screened per review round, at most
+hand_download = 10       # papers without a full text recommended to the vet to download
+
+# USD per 1M tokens, paid tier, from https://aistudio.google.com/docs/pricing
+# (checked 2026-11-03). Thinking tokens are billed as output. Paid calls are refused after
+# valid_until (the block's, or a model's own when its price changes sooner) until someone
+# re-checks the prices and updates this block. Free-tier-only models (Gemma) are never used.
 [prices]
 valid_until = "2026-12-31"
 
@@ -28,3 +49,12 @@ output = 3.75         # and this to 7.50
 [prices."gemini-3.5-flash-lite"]
 input = 0.30
 output = 2.50
+
+[prices."gemini-3.1-flash-lite"]
+input = 0.25
+output = 1.50
+
+[prices."gemini-4-argon"]
+input = 2.00          # Google raises this to 4.00 on 2026-12-01
+output = 10.00        # and this to 20.00
+valid_until = "2026-11-30"

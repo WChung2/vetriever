@@ -38,6 +38,7 @@ class Record:
     pmcid: str = ""
     openalex_id: str = ""
     pub_types: str = ""       # pipe list
+    mesh: str = ""            # pipe list of MeSH headings (PubMed's indexers)
     oa_url: str = ""
 
 
@@ -49,14 +50,15 @@ class Http:
                                              follow_redirects=True)
         self.last: dict[str, float] = {}
 
-    def get(self, url: str, params: dict | None = None, gap: float = 1.0) -> httpx.Response:
+    def get(self, url: str, params: dict | None = None, gap: float = 1.0,
+            headers: dict | None = None) -> httpx.Response:
         host = httpx.URL(url).host
         for attempt in range(4):
             wait = self.last.get(host, 0.0) + gap - time.monotonic()
             if wait > 0:
                 time.sleep(wait)
             self.last[host] = time.monotonic()
-            r = self.client.get(url, params=params)
+            r = self.client.get(url, params=params, headers=headers)
             if r.status_code not in (429, 500, 502, 503, 504) or attempt == 3:
                 break
             retry = r.headers.get("Retry-After", "")
@@ -92,16 +94,32 @@ class QueryProblem(ValueError):
     result would silently mean something else. The message goes back to the Search agent."""
 
 
-def pubmed_search(http: Http, query: str, limit: int = 100) -> tuple[int, list[str]]:
-    """PubMed query syntax, e.g. '"Dogs"[Mesh] AND "Postoperative Pain"[Mesh]'."""
+def pubmed_search(http: Http, query: str, limit: int = 100,
+                  sort: str = "") -> tuple[int, list[str]]:
+    """PubMed query syntax, e.g. '"Dogs"[Mesh] AND "Postoperative Pain"[Mesh]'.
+    sort="relevance" orders by PubMed's Best Match; the default is newest first."""
+    params = {"sort": sort} if sort else {}
     res = _ncbi(http, "esearch.fcgi", db="pubmed", term=query, retmax=limit,
-                retmode="json").json()["esearchresult"]
+                retmode="json", **params).json()["esearchresult"]
     warn = res.get("warninglist", {}) | res.get("errorlist", {})
     ignored = [p for k in ("quotedphrasesnotfound", "phrasesnotfound", "phrasesignored",
                            "fieldsnotfound") for p in warn.get(k, [])]
     if ignored:
         raise QueryProblem(f"PubMed ignored {ignored} in {query!r}")
     return int(res["count"]), res["idlist"]
+
+
+def mesh_heading(http: Http, name: str) -> dict | None:
+    """The MeSH heading with exactly this name: {"name", "entry_terms"}, or None when no
+    heading has this name (an entry term, an old name or a typo)."""
+    ids = _ncbi(http, "esearch.fcgi", db="mesh", term=f'"{name}"[MH]',
+                retmode="json").json()["esearchresult"]["idlist"]
+    for uid in ids[:5]:
+        rec = _ncbi(http, "esummary.fcgi", db="mesh", id=uid, retmode="json").json()["result"][uid]
+        terms = rec.get("ds_meshterms") or []
+        if terms and terms[0].lower() == name.lower():
+            return {"name": terms[0], "entry_terms": terms[1:]}
+    return None
 
 
 def _text(el) -> str:
@@ -124,7 +142,8 @@ def _pubmed_record(art) -> Record:
                   first_author=authors[0] if authors else "",
                   last_author=authors[-1] if len(authors) > 1 else "",
                   doi=ids.get("doi", ""), pmid=_text(cit.find("PMID")), pmcid=ids.get("pmc", ""),
-                  pub_types="|".join(_text(p) for p in a.findall("PublicationTypeList/PublicationType")))
+                  pub_types="|".join(_text(p) for p in a.findall("PublicationTypeList/PublicationType")),
+                  mesh="|".join(_text(m) for m in cit.findall("MeshHeadingList/MeshHeading/DescriptorName")))
 
 
 def pubmed_records(http: Http, pmids: list[str]) -> list[Record]:

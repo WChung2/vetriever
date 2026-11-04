@@ -14,7 +14,11 @@ PUBMED_XML = b"""<?xml version="1.0"?><PubmedArticleSet><PubmedArticle>
 <AuthorList><Author><LastName>Doe</LastName><Initials>J</Initials></Author>
 <Author><CollectiveName>Study Group</CollectiveName></Author></AuthorList>
 <PublicationTypeList><PublicationType>Randomized Controlled Trial, Veterinary</PublicationType>
-</PublicationTypeList></Article></MedlineCitation>
+</PublicationTypeList></Article>
+<MeshHeadingList><MeshHeading><DescriptorName MajorTopicYN="N">Animals</DescriptorName></MeshHeading>
+<MeshHeading><DescriptorName MajorTopicYN="Y">Pain, Postoperative</DescriptorName>
+<QualifierName MajorTopicYN="N">drug therapy</QualifierName></MeshHeading></MeshHeadingList>
+</MedlineCitation>
 <PubmedData><ArticleIdList><ArticleId IdType="doi">10.1/x</ArticleId>
 <ArticleId IdType="pmc">PMC9</ArticleId></ArticleIdList></PubmedData>
 </PubmedArticle></PubmedArticleSet>"""
@@ -44,6 +48,7 @@ def test_pubmed_records_parse():
     assert rec.title == "Two doses of X after surgery"
     assert rec.abstract == "OBJECTIVE: Compare doses. RESULTS: 12/20 dogs."
     assert (rec.first_author, rec.last_author) == ("Doe J", "Study Group")
+    assert rec.mesh == "Animals|Pain, Postoperative"
 
 
 def test_openalex_abstract_is_rebuilt_in_order():
@@ -63,3 +68,18 @@ def test_retries_rate_limit_then_succeeds():
 def test_gives_up_after_repeated_server_errors():
     with pytest.raises(httpx.HTTPStatusError):
         http(lambda req: httpx.Response(503)).get("https://example.org/x")
+
+
+def test_mesh_heading_needs_the_exact_name():
+    def handler(req):
+        if "esearch" in req.url.path:
+            return httpx.Response(200, json={"esearchresult": {"idlist": ["1", "2"]}})
+        uid = req.url.params["id"]
+        names = {"1": ["Anemia, Hemolytic", "Hemolytic Anemia"],
+                 "2": ["Anemia, Hemolytic, Autoimmune", "Autoimmune Hemolytic Anemia",
+                       "Cold Agglutinin Disease"]}[uid]
+        return httpx.Response(200, json={"result": {uid: {"ds_meshterms": names}}})
+    got = c.mesh_heading(http(handler), "anemia, hemolytic, autoimmune")
+    assert got == {"name": "Anemia, Hemolytic, Autoimmune",
+                   "entry_terms": ["Autoimmune Hemolytic Anemia", "Cold Agglutinin Disease"]}
+    assert c.mesh_heading(http(handler), "Hemolytic Anemia") is None     # an entry term only

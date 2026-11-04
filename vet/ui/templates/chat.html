@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% from "_head.html" import topic_head, composer %}
+{% block title %}{{ s.title }}{% endblock %}
+{% block pane %}
+{{ topic_head(name, s, "chat", counts) }}
+<div class="thread"><div class="thread-inner">
+{% if not items %}<p class="empty">No conversation saved for this search.</p>{% endif %}
+{% for m in items %}
+  {% if m.who == "vet" %}
+  <div class="msg-user">{{ m.text }}</div>
+  {% elif m.who == "planner" and m.kind == "round" %}
+  <div class="msg-bot"><span class="avatar" aria-hidden="true">V</span><div class="bot-body">
+    <p class="round-label">Planner · round {{ m.n }}{% if m.time %} · {{ m.time | day }}{% endif %}</p>
+    {% if m.restatement %}<p>{{ m.restatement }}</p>{% endif %}
+    {% if m.chips %}
+    <div class="panel"><h3>Your question</h3>
+      <div class="chips">{% for c in m.chips %}<span class="chip{% if c.source == 'suggestion' %} suggest{% endif %}">{{ c.item }}{% if c.source %} <small>{{ sources.get(c.source, c.source) }}</small>{% endif %}</span>{% endfor %}</div>
+    </div>
+    {% endif %}
+    {% if m.terms %}
+    <div class="panel"><h3>The search</h3>
+      <div class="terms">{% for block, ts in m.terms | groupby("block") %}
+        <p><span class="check-name">{{ block }}</span> {% for t in ts %}<span class="term">{{ t.term }}{% if t.hits is not none %} <small>{{ t.hits | thousands }}</small>{% endif %}</span>{% if not loop.last %} <span class="or">or</span> {% endif %}{% endfor %}</p>
+      {% endfor %}</div>
+      {% if m.hits %}<p class="cost"><b>{{ m.hits | thousands }}</b> PubMed records for the whole search</p>{% endif %}
+      {% if m.problems %}<details class="why"><summary>{{ m.problems | length }} term{{ "" if m.problems | length == 1 else "s" }} changed by code</summary>{% for p in m.problems %}<p>{{ p }}</p>{% endfor %}</details>{% endif %}
+    </div>
+    {% endif %}
+    {% if m.questions %}
+    <div class="panel"><h3>Questions</h3>
+      {% for q in m.questions %}
+      <div class="q-row"><p>{{ q.question }}</p>
+        <div class="choice">{% for o in q.options %}<span class="opt{% if o == q.answer %} on{% endif %}">{{ o }}</span>{% endfor %}
+          {% if q.answer and q.answer not in q.options %}<span class="opt on">{{ q.answer }}</span>{% endif %}</div></div>
+      {% endfor %}
+    </div>
+    {% endif %}
+    {% if m.papers %}
+    <div class="panel"><h3>{{ m.papers | length }} papers this search finds</h3>
+      <ul class="papers">{% for p in m.papers %}
+        <li><span class="t">{{ p.title }}<span>PMID {{ p.key }}</span></span>
+          <span class="mark mark-{{ p.mark or 'none' }}" title="your mark">{{ "👍" if p.mark == "yes" else ("👎" if p.mark == "no" else "–") }}</span></li>
+      {% endfor %}</ul>
+    </div>
+    {% endif %}
+  </div></div>
+  {% elif m.who == "planner" %}
+  <div class="msg-bot"><span class="avatar" aria-hidden="true">V</span><div class="bot-body"><p>{{ m.text }}</p></div></div>
+  {% else %}
+  <div class="event event-{{ m.kind }}"><span class="dot" aria-hidden="true"></span>
+    <span>{{ m.text }}{% if m.cost %} · <b>{{ m.cost | usd }}</b>{% endif %}
+      {% if m.link %} · <a href="/topics/{{ name }}/{{ m.link }}">open</a>{% endif %}</span></div>
+  {% endif %}
+{% endfor %}
+</div></div>
+{{ composer("Reply to the Planner…", enabled=chat_enabled) }}
+{% endblock %}

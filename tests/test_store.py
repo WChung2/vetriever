@@ -180,3 +180,26 @@ def test_conference_abstracts_sharing_a_doi_stay_apart(tmp_path):
     db.import_folder(write_any(t, tmp_path / "a"))
     rep = db.import_folder(write_any(two, tmp_path / "b"))
     assert rep.new_documents == ["ABS-FORUM2020-2", "FDA-NADA999998"]
+
+
+def test_a_folder_of_several_studies_is_fully_accounted_for(tmp_path):
+    one = fixture.clean(CB)
+    two = replace_everywhere(second_study(fixture.clean(CB)), fixture.SID, "VET-2")
+    both = {t: one[t] + two[t] for t in one}
+    rep = Store(tmp_path / "v.db", CB).import_folder(write_any(both, tmp_path / "in"))
+    assert len(rep.new_studies) == 2 and not rep.missing
+    assert rep.values_stored == rep.values_in > 0
+
+
+def test_an_old_topic_column_that_is_now_a_study_field_moves_to_the_study(tmp_path):
+    t = old_layout(fixture.clean(CB))
+    t["ext_pain"][0]["follow_up_as_written"] = "rechecked at 2, 6 and 24 h"
+    t["evidence"].append({**t["evidence"][0], "table": "ext_pain", "row_key": "",
+                          "field": "follow_up_as_written", "value": "rechecked at 2, 6 and 24 h",
+                          "quote": "", "location": "Methods"})
+    db = Store(tmp_path / "test.db", CB)
+    rep = db.import_folder(write_any(t, tmp_path / "old"))
+    assert not rep.missing
+    assert db.rows("studies")[0]["follow_up_as_written"] == "rechecked at 2, 6 and 24 h"
+    assert not [r for r in db.rows("topic_fields") if r["field"] == "follow_up_as_written"]
+    assert validate(db.tables(), CB) == []

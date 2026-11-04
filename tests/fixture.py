@@ -70,14 +70,14 @@ def clean(cb: Codebook) -> dict:
                            dose_as_written="2 mg/kg SC once at extubation")]
     t["results"] = [
         _row(cb, "results", result_id=f"{SID}-R1", ID=SID, source_id=DOC, arm_id=A2,
-             endpoint="rescue analgesia", timepoint_value=24, timepoint_unit="hours",
+             result_kind="outcome", endpoint="rescue analgesia", timepoint_value=24, timepoint_unit="hours",
              timepoint_as_written="24 h", n=29, events=3, statistic_type="count", value=3,
              as_written="3/29 dogs given analgesic X needed rescue within 24 h", location="Results"),
         _row(cb, "results", result_id=f"{SID}-R2", ID=SID, source_id=FDA, arm_id=A2,
-             endpoint="rescue analgesia", n=29, events=3, statistic_type="risk_ratio", value=0.3,
+             result_kind="outcome", endpoint="rescue analgesia", n=29, events=3, statistic_type="risk_ratio", value=0.3,
              variability_type="CI95", variability_low=0.1, variability_high=0.9,
              comparison="analgesic X vs placebo", reference_arm_id=A1, p_value="<0.05",
-             as_written="RR 0.3 (95% CI 0.1-0.9), p<0.05", location="Table 3"),
+             as_written="3/29 dogs, RR 0.3 (95% CI 0.1-0.9), p<0.05", location="Table 3"),
     ]
     t["sites"] = [_row(cb, "sites", ID=SID, site_no=1, Facility="Fictional Veterinary Hospital",
                        City="Bern", Country="Switzerland")]
@@ -109,7 +109,7 @@ def evidence_for(cb: Codebook, t: dict) -> list:
     for table, row, f, value, row_key in cells:
         if f.evidence == "none" or not value:
             continue
-        quote = f"fixture quote for {f.name}" if f.evidence == "quote" else ""
+        quote = f"fixture quote for {f.name}: {value}" if f.evidence == "quote" else ""
         rows.append(_row(cb, "evidence", ID=row["ID"], source_id=DOC, table=table,
                          row_key=row_key, field=f.name, value=value, quote=quote,
                          quote_truncated="no", location="Methods"))

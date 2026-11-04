@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta name="htmx-config" content='{"allowEval": false, "allowScriptTags": false, "includeIndicatorStyles": false, "selfRequestsOnly": true, "historyCacheSize": 0}'>
+<title>{% block title %}Vetriever{% endblock %} · Vetriever</title>
+<link rel="stylesheet" href="/static/style.css">
+<script src="/static/htmx.min.js" defer></script>
+</head>
+<body class="app" hx-headers='{"X-CSRF": "{{ token }}"}'>
+<div class="shell">
+<aside class="side" aria-label="Your searches">
+  <div class="side-top">
+    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true">V</span>Vetriever</a>
+    <span class="local" title="These pages run on this Mac only. Nothing is sent anywhere.">Local only</span>
+  </div>
+  <a class="button new" href="/">+ New question</a>
+  <h2>Your searches</h2>
+  <p class="legend">Steps: ask · search · review · full text · database<br>
+    <span class="steps"><i class="done"></i></span> done <span class="steps"><i class="now"></i></span> next</p>
+  <ul class="searches">
+  {% for s in searches %}
+    <li><a class="search-item" href="/topics/{{ s.name }}" {% if current == s.name %}aria-current="page"{% endif %}>
+      <span class="name">{{ s.title }}</span>
+      <span class="said {{ s.tone }}">{{ s.status }}</span>
+      <span class="line"><span class="steps" role="img" aria-label="{% for st in s.steps %}{{ step_names[loop.index0] }}: {{ 'done' if st == 'done' else ('next' if st == 'now' else 'to come') }}{{ '; ' if not loop.last }}{% endfor %}">{% for st in s.steps %}<i class="{{ st }}" title="{{ step_names[loop.index0] }}: {{ 'done' if st == 'done' else ('next' if st == 'now' else 'to come') }}"></i>{% endfor %}</span>
+        <span>{{ s.date | day }}</span></span>
+      <span class="line"><span>{{ s.line }}</span></span>
+    </a></li>
+  {% else %}
+    <li class="side-empty">No searches yet. Ask a question to start one.</li>
+  {% endfor %}
+  </ul>
+  <nav class="side-foot" aria-label="Database">
+    <a href="/studies" {% if path == "/studies" %}aria-current="page"{% endif %}>All studies</a>
+    <a href="/who" {% if path == "/who" %}aria-current="page"{% endif %}>Who &amp; where</a>
+    <a href="/spending" {% if path == "/spending" %}aria-current="page"{% endif %}>Spending <span>{{ spend.total | usd }} / {{ spend.cap | usd }}</span></a>
+    <progress value="{{ spend.share }}" max="1" aria-label="Spent of the cap">{{ (spend.share * 100) | round | int }}%</progress>
+  </nav>
+</aside>
+<section class="pane">
+{% block pane %}{% endblock %}
+</section>
+</div>
+</body>
+</html>

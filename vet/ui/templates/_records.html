@@ -1,0 +1,19 @@
+<section id="records" class="records" aria-live="polite">
+  <p class="result-line">
+    {{ data.total | thousands }} record{{ "" if data.total == 1 else "s" }}{% if q or flag or design %} match{% endif %}
+    {% if data.pages > 1 %} · page {{ data.page }} of {{ data.pages }}{% endif %}
+  </p>
+  {% if not data.rows %}
+  <p class="empty">Nothing here{% if q or flag or design %} for these filters{% endif %}.</p>
+  {% endif %}
+  {% for r in data.rows %}
+    {% include "_record.html" %}
+  {% endfor %}
+  {% if data.pages > 1 %}
+  <nav class="pager" aria-label="Pages">
+    {% set base = "/topics/" ~ name ~ "/review?view=" ~ data.view ~ "&q=" ~ (q | urlencode) ~ "&flag=" ~ flag ~ "&design=" ~ design %}
+    {% if data.page > 1 %}<a class="button ghost" href="{{ base }}&page_no={{ data.page - 1 }}" hx-get="{{ base }}&page_no={{ data.page - 1 }}" hx-target="#records" hx-swap="outerHTML" hx-push-url="true">← Previous</a>{% endif %}
+    {% if data.page < data.pages %}<a class="button ghost" href="{{ base }}&page_no={{ data.page + 1 }}" hx-get="{{ base }}&page_no={{ data.page + 1 }}" hx-target="#records" hx-swap="outerHTML" hx-push-url="true">Next →</a>{% endif %}
+  </nav>
+  {% endif %}
+</section>

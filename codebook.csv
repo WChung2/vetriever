@@ -30,21 +30,29 @@ studies,study_design_as_written,T,text,,,location,all,,"Design sentence(s), verb
 studies,Eligibility Criteria,T,criteria,,,location,all,,Inclusion/exclusion (or case-selection) criteria in the fixed layout.
 studies,Primary Outcome Measures,T,text,,,location,all,,"Primary endpoint(s), verbatim."
 studies,dose_selection_rationale,T,text,,,location,all,,"Why these doses were chosen, verbatim."
-studies,rescue_or_escalation_rule,T,text,,,location,all,,"Rescue analgesia (pain), transfusion trigger (IMHA) or adding an immunosuppressant (CIE): threshold and action, verbatim."
+studies,rescue_or_escalation_rule,T,text,,,location,all,,"Rescue treatment or escalation rule, threshold and action, verbatim (e.g. rescue analgesia; adding an immunosuppressant). When the study's topic has its own field for it (IMHA transfusion_trigger), that field takes it instead."
 studies,trial_results_summary,T,text,,,location,all,,1-3 sentences verbatim from results or conclusion.
-studies,Started date,T,date,,,quote,all,,"Start of enrolment, at the precision stated."
-studies,Complete Date,T,date,,,quote,all,,"End of the study, at the precision stated."
+studies,Started date,T,date,,,quote,all,,"Start of enrolment (retrospective: date of the first case in the records searched), at the precision stated."
+studies,enrolment_end_date,T,date,,,quote,all,,"End of enrolment (last animal enrolled), at the precision stated."
+studies,Complete Date,T,date,,,quote,all,,"End of the study (retrospective: date of the last case in the records searched), at the precision stated."
 studies,n_enrolled,T,integer,,,quote,all,,Dogs enrolled (retrospective: cases included).
 studies,n_randomised,T,integer,,,quote,study_kind=prospective_trial|other,,Dogs randomised.
 studies,n_analysed,T,integer,,,quote,all,,Denominator of the primary endpoint.
-studies,age_min_value,T,number,,,quote,all,,Minimum age.
+studies,n_screened,T,integer,,,quote,all,,Animals assessed for eligibility before any exclusion (retrospective: records found).
+studies,n_excluded,T,integer,,,quote,all,,Animals assessed but not enrolled.
+studies,n_withdrawn,T,integer,,,quote,all,,"Animals enrolled who left the study or were removed from the analysis (withdrawn, excluded after enrolment, protocol violation)."
+studies,n_lost_to_follow_up,T,integer,,,quote,all,,Animals enrolled whose outcome is unknown because follow-up stopped.
+studies,flow_as_written,T,text,,,location,all,,"The passage or figure legend describing how many animals were screened, excluded, enrolled, withdrawn and analysed, verbatim."
+studies,follow_up_as_written,T,text,,,location,all,,"How long and how the animals were followed (e.g. rechecks at days 7, 14, 30, 60 and 365), verbatim."
+studies,sample_size_as_written,T,text,,,location,all,,"The sample-size calculation (expected effect, power, alpha, allocation ratio), verbatim."
+studies,age_min_value,T,number,,,quote,all,,"Youngest animal enrolled, as reported (the observed range; entry limits belong in Eligibility Criteria)."
 studies,age_min_unit,T,enum,days|weeks|months|years,,none,all,,Unit of age_min_value.
-studies,age_max_value,T,number,,,quote,all,,Maximum age.
+studies,age_max_value,T,number,,,quote,all,,"Oldest animal enrolled, as reported (the observed range; entry limits belong in Eligibility Criteria)."
 studies,age_max_unit,T,enum,days|weeks|months|years,,none,all,,Unit of age_max_value.
 studies,age_as_written,T,text,,,location,all,,"Age statement, verbatim."
-studies,weight_min_value,T,number,,,quote,all,,Minimum body weight.
+studies,weight_min_value,T,number,,,quote,all,,"Lightest animal enrolled, as reported (the observed range; entry limits belong in Eligibility Criteria)."
 studies,weight_min_unit,T,enum,kg|lb|g,,none,all,,Unit of weight_min_value.
-studies,weight_max_value,T,number,,,quote,all,,Maximum body weight.
+studies,weight_max_value,T,number,,,quote,all,,"Heaviest animal enrolled, as reported (the observed range; entry limits belong in Eligibility Criteria)."
 studies,weight_max_unit,T,enum,kg|lb|g,,none,all,,Unit of weight_max_value.
 studies,weight_as_written,T,text,,,location,all,,"Weight statement, verbatim."
 studies,species,T,pipe_list,,,none,all,,"Species studied, as written."
@@ -53,6 +61,7 @@ studies,intervention_type,C,enum,DRUG|BIOLOGICAL|DEVICE|PROCEDURE|DIETARY_SUPPLE
 studies,control_type,C,enum,placebo|active|dose_comparison|no_treatment|historical|none,placebo = inactive treatment; active = another active treatment; dose_comparison = other doses of the same treatment only; no_treatment = untreated group; historical = earlier cases or literature; none = no control group.,quote,all,,Comparator.
 studies,allocation,C,enum,parallel|crossover|single_group,parallel = each dog gets one arm; crossover = each dog gets several arms in sequence; single_group = one arm only.,quote,all,,How dogs receive arms.
 studies,randomised,C,enum,yes|no,yes only when random allocation is stated.,quote,study_kind=prospective_trial|other,,Random allocation.
+studies,randomisation_as_written,T,text,,,location,study_kind=prospective_trial|other,,"How animals were allocated to arms (method, ratio, blocks or strata, concealment), verbatim."
 studies,blinding,C,enum,none|single|double|blinded_unspecified,none = open label; single or double as stated; blinded_unspecified = blinded but who is not stated.,quote,study_kind=prospective_trial|other,,Blinding.
 studies,outcome_instruments,T,pipe_list,,,none,all,,"Scales or scores used, as named (e.g. CMPS-SF|VAS)."
 studies,Sponsor,T,pipe_list,,,none,all,,"Funders or sponsors, as written."
@@ -77,11 +86,11 @@ arms,arm_as_written,T,text,,,location,all,,"The arm's description, verbatim."
 arm_doses,ID,K,text,,,none,all,,Study key.
 arm_doses,arm_id,K,text,,,none,all,,Arm key.
 arm_doses,dose_id,K,text,,,none,all,,<arm_id>-D<n>.
-arm_doses,drug,T,text,,,none,all,,Drug as written.
+arm_doses,drug,T,text,,,none,all,,"Drug as written. A drug every arm received (a run-in dose, supportive care such as gastroprotectants or antibiotics) is listed in each arm."
 arm_doses,dose_value,T,number,,,quote,all,,Dose (lower end of a range).
 arm_doses,dose_value_max,T,number,,,quote,all,,Upper end when a range is stated.
 arm_doses,dose_unit,T,text,,,none,all,,"Unit as written (mg/kg, µg/kg/h, mg/m2, ...)."
-arm_doses,route,C,enum,PO|IV|IM|SC|transdermal|topical|local_infiltration|epidural|intra_articular|inhaled|other,As stated; other = any other route.,quote,all,,Route.
+arm_doses,route,C,pipe_list,PO|IV|IM|SC|transdermal|topical|local_infiltration|epidural|intra_articular|inhaled|other,As stated; several routes for the same dose (e.g. IV or PO) as a list; other = any other route.,quote,all,,Route.
 arm_doses,frequency,T,text,,,none,all,,As written.
 arm_doses,timing,T,text,,,none,all,,"When given, as written (e.g. 30 min before induction)."
 arm_doses,dose_duration,T,text,,,none,all,,"How long, as written, including any taper."
@@ -90,13 +99,17 @@ results,result_id,K,text,,,none,all,,<ID>-R<n>.
 results,ID,K,text,,,none,all,,Study key.
 results,source_id,K,text,,,none,all,,Document the result comes from.
 results,arm_id,K,text,,,none,all,,Arm; empty = the whole cohort.
+results,result_kind,C,enum,outcome|baseline|adverse_event,"outcome = a result for an endpoint, including deaths counted as an endpoint (survival, mortality); baseline = the animals' condition at entry, before treatment (e.g. PCV, Coombs test, severity score, sex, age), in endpoint; adverse_event = a harm (side effect, complication, death reported as a harm or with its cause) with the event or cause in endpoint. Always filled.",none,all,,What kind of number this row holds.
+results,subgroup,T,text,,,none,all,,"The group the row is about when it is not one arm or the whole study, as written (e.g. 'dogs given azathioprine', 'MC + MM groups'); arm_id stays empty."
+results,population,C,enum,intention_to_treat|per_protocol|other,"Only as the document labels the analysis; empty when not stated; other = any other population, named in notes.",none,all,,Analysis population.
 results,endpoint,T,text,,,none,all,,Endpoint as written.
 results,timepoint_value,T,number,,,none,all,,Timepoint.
 results,timepoint_unit,C,enum,minutes|hours|days|weeks|months|years,As reported.,none,all,,Unit of timepoint_value.
 results,timepoint_as_written,T,text,,,none,all,,"Timepoint, verbatim."
+results,reference_timepoint_as_written,T,text,,,none,all,,"For a change within the same animals: the earlier time compared against, verbatim (e.g. 'before splenectomy')."
 results,n,T,integer,,,none,all,,Denominator.
 results,events,T,integer,,,none,all,,Numerator (the 12 in 12/20).
-results,statistic_type,C,enum,proportion|count|mean|median|mean_difference|median_difference|odds_ratio|risk_ratio|hazard_ratio|median_time_to_event|other,As reported.,none,all,,Statistic.
+results,statistic_type,C,enum,proportion|count|mean|median|mean_difference|median_difference|odds_ratio|risk_ratio|risk_difference|hazard_ratio|median_time_to_event|other,As reported.,none,all,,Statistic.
 results,value,T,number,,,none,all,,Number as reported (60 for 60%).
 results,value_unit,T,text,,,none,all,,"%, days, score points, ..."
 results,variability_type,C,enum,SD|SE|CI95|CI90|IQR|range|other,As reported.,none,all,,Spread.
@@ -104,10 +117,15 @@ results,variability_value,T,number,,,none,all,,For SD or SE.
 results,variability_low,T,number,,,none,all,,"Lower bound (CI, IQR, range)."
 results,variability_high,T,number,,,none,all,,Upper bound.
 results,comparison,T,text,,,none,all,,As written (e.g. high dose vs placebo).
-results,reference_arm_id,K,text,,,none,all,,"Arm compared against, when stated."
+results,reference_arm_id,K,text,,,none,all,,"Arm compared against, when stated; empty when the comparison is against pooled arms (name them in comparison)."
 results,p_value,T,text,,,none,all,,"As written, keeping < (e.g. <0.05)."
+results,statistical_test,T,text,,,none,all,,"Test or model as written (e.g. 'log-rank test', 'Cox regression')."
+results,ae_attributed_to,C,enum,treatment|disease|procedure|unclear,What the authors attribute the event to; unclear = they say it is uncertain; empty = not stated.,none,result_kind=adverse_event,,Adverse events: cause as attributed by the authors.
+results,ae_grade,T,text,,,none,result_kind=adverse_event,,"Adverse events: severity or grade as written (e.g. 'VCOG-CTCAE grade 2', 'major')."
+results,ae_fatal,C,enum,died|euthanised|no,As stated; died also covers 'died or was euthanised' when the document does not separate them.,none,result_kind=adverse_event,,Adverse events: whether the event ended in death.
 results,as_written,T,text,,,none,all,500,The verbatim sentence or table row (this is the quote).
 results,location,T,text,,,none,all,,Section / table / page.
+results,notes,N,text,,,none,all,,"Only ambiguity, or what a coded field could not say (e.g. which population 'other' is)."
 sites,ID,K,text,,,none,all,,Study key.
 sites,site_no,K,integer,,,none,all,,Unique within a study.
 sites,Facility,T,text,,,none,all,,Site name as written.
@@ -126,6 +144,7 @@ breeds,ID,K,text,,,none,all,,Study key.
 breeds,arm_id,K,text,,,none,all,,Arm; empty = the whole study.
 breeds,Breed,T,text,,,none,all,,As written (including 'mixed breed').
 breeds,n_dogs,T,integer,,,quote,all,,Number of dogs of this breed.
+breeds,percent,T,number,,,quote,all,,"Share of dogs of this breed, in %, only when the count is not given."
 definitions,source_id,K,text,,,none,all,,Document the definition comes from.
 definitions,ID,K,text,,,none,all,,Study key; empty for consensus statements and guidelines.
 definitions,term,T,text,,,none,all,,"e.g. complete remission, case definition, relapse."

@@ -8,25 +8,22 @@ range-finding study of a new analgesic: efficacy and safety endpoints, pain scal
 analgesia rules, dose selection, eligibility criteria, sample sizes."""
 
 [screen]
-# Studies in animals are scarce, so screening keeps anything that might help and drops only
-# records that are clearly off topic. Kept records get flags; at the approval step you choose
-# which flags to leave out. Nothing is deleted: every decision is saved with its reason.
-off_topic = [
-  "No dogs: other species only",
-  "Not about pain, analgesia, or analgesic or anaesthetic drugs (e.g. surgical technique, infection or tumour outcomes only)",
+# Fills prompts/screen.md. Studies in animals are scarce, so screening keeps anything that
+# might help and drops only records that are clearly off topic; nothing is deleted. The
+# related conditions keep what the earlier flags kept (chronic pain, other procedures).
+species = "dogs"
+condition = "pain after surgery"
+also_called = ["postoperative pain", "post-operative analgesia", "perioperative analgesia"]
+related = [
+  "pain after other procedures (dental, diagnostic or minor procedures)",
+  "chronic pain such as osteoarthritis",
+  "anaesthesia or sedation for surgery, even when pain is not measured",
 ]
-flags = [
-  "pk_only: drug levels or pharmacology, no pain outcome",
-  "no_surgery: dogs not undergoing surgery (e.g. healthy research dogs, other procedures)",
-  "chronic_pain: chronic pain such as osteoarthritis",
-  "no_pain_outcome: anaesthesia or sedation study where pain or analgesia is not measured",
-  "experimental: induced pain or injury model in research dogs",
-  "single_case: a report of one dog",
-  "mixed_species: dogs with other species; dog results may not be reported separately",
-  "no_abstract: decided on the title only",
+treatments = [
+  "NSAIDs", "opioids", "local anaesthetics and nerve blocks", "alpha-2 agonists",
+  "NMDA antagonists (ketamine, amantadine)", "gabapentinoids", "paracetamol", "maropitant",
+  "grapiprant",
 ]
-years = "any"
-languages = "any"        # verbatim quotes stay in the original language
 
 [targets]   # the Review agent searches again where these are thin
 drug_classes = [

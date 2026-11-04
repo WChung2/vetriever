@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% from "_head.html" import topic_head %}
+{% block title %}{{ s.title }} · who &amp; where{% endblock %}
+{% block pane %}
+{{ topic_head(name, s, "who", counts) }}
+<main class="history"><div class="history-inner">
+<p class="lede">Institutions that led this search's approved papers (a first or last author there), from OpenAlex author records.</p>
+{% set topic = name %}
+{% include "_who_table.html" %}
+</div></main>
+{% endblock %}

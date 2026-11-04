@@ -11,6 +11,12 @@ __pycache__/
 # corpus/docs/ holds paywalled full texts that may not be shared.
 corpus/
 
+# The pipeline design draft, with the project lead's notes: local only
+docs/pipeline.md
+
+# The decision log holds results of real runs (counts, recall, benchmark outcomes): local only
+decisions.md
+
 # Outputs from other tools kept for comparison (full texts and extracted data): local only
 examples/
 

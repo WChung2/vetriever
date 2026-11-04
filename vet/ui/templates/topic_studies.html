@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% from "_head.html" import topic_head, funnel %}
+{% block title %}{{ s.title }} · studies{% endblock %}
+{% block pane %}
+{{ topic_head(name, s, "studies", counts) }}
+<main class="history"><div class="history-inner">
+{{ funnel(counts) }}
+{% set topic = name %}
+{% include "_studies_table.html" %}
+</div></main>
+{% endblock %}

@@ -1,0 +1,50 @@
+<article class="record{% if r.decision == 'keep' and not r.approved and not r.rejected %} needs-you{% endif %}{% if r.rejected %} is-rejected{% endif %} decision-{{ r.decision }}" id="r-{{ r.key | replace(':', '-') | replace('/', '-') | replace('.', '-') }}">
+  <div class="record-main">
+    <h3>{{ r.title }}</h3>
+    <p class="meta">
+      {% if r.year %}<span>{{ r.year }}</span>{% endif %}
+      {% if r.journal %}<span>{{ r.journal }}</span>{% endif %}
+      {% if r.decision == "lead" %}<span class="pill lead">Overview</span>
+      {% elif r.design %}<span class="pill design">{{ designs.get(r.design, r.design | label) }}</span>{% endif %}
+      {% for f in r.flags %}<span class="pill flag flag-{{ f }}">{{ flag_names.get(f, f | label) }}</span>{% endfor %}
+    </p>
+    {% if r.summary %}<p class="summary">{{ r.summary }}</p>{% endif %}
+    <details class="why">
+      <summary>Why the screening {{ "dropped it" if r.decision == "off_topic" else ("set it aside" if r.decision == "aside" else ("marked it an overview" if r.decision == "lead" else "kept it")) }}, and how it was found</summary>
+      {% if r.rule %}<p class="rule"><b>Dropped:</b> {{ rules.get(r.rule, r.rule) }}</p>{% endif %}
+      {% if r.reasoning %}<p>{{ r.reasoning }}</p>{% endif %}
+      {% for check, answer, quote in r.checks %}
+      <p class="check"><span class="check-name">{{ check_names.get(check, check) }}</span> <b>{{ answer_names.get(answer, answer | label) }}</b>{% if quote %} <q>{{ quote }}</q>{% endif %}</p>
+      {% endfor %}
+      {% if r.decision == "aside" %}<p>Letters, comments and errata are set aside before screening.</p>{% endif %}
+      {% if r.found_by %}<p class="found"><span class="check-name">Found by</span> {{ r.found_by | join("; ") }}</p>{% endif %}
+      <p class="ids">{{ r.key }}{% if r.pmid %} · PMID {{ r.pmid }}{% endif %}{% if r.doi %} · {{ r.doi }}{% endif %}</p>
+    </details>
+  </div>
+  <div class="record-side">
+    {% macro act(action, label, cls="button") %}
+    <form method="post" action="/topics/{{ name }}/decide" hx-post="/topics/{{ name }}/decide"
+          hx-target="closest article" hx-swap="outerHTML">
+      <input type="hidden" name="csrf" value="{{ token }}">
+      <input type="hidden" name="key" value="{{ r.key }}">
+      <input type="hidden" name="action" value="{{ action }}">
+      <button class="{{ cls }}" type="submit">{{ label }}</button>
+    </form>
+    {% endmacro %}
+    {% if r.approved %}
+      <span class="decided"><span class="done-note" title="Approved {{ r.approved | day }}">✓ approved{% if r.decision == "off_topic" %} (kept anyway){% endif %}</span>{{ act("undo", "undo", "linklike") }}</span>
+    {% elif r.rejected %}
+      <span class="decided"><span class="rejected-note" title="Rejected {{ r.rejected | day }}">✗ rejected</span>{{ act("undo", "undo", "linklike") }}</span>
+    {% elif r.decision == "keep" %}
+      <span class="decide">{{ act("approve", "Approve") }}{{ act("reject", "Reject", "button ghost danger") }}</span>
+    {% elif r.decision == "off_topic" %}
+      {{ act("approve", "Keep anyway", "button ghost") }}
+    {% elif r.decision == "lead" %}
+      <span class="sub">overview · background</span>
+    {% endif %}
+    <span class="links">
+      {% if r.pmid %}<a href="https://pubmed.ncbi.nlm.nih.gov/{{ r.pmid }}/" target="_blank" rel="noopener noreferrer">PubMed ↗</a>{% endif %}
+      {% if r.doi %}<a href="https://doi.org/{{ r.doi }}" target="_blank" rel="noopener noreferrer">DOI ↗</a>{% endif %}
+    </span>
+  </div>
+</article>

@@ -1,0 +1,133 @@
+{% extends "base.html" %}
+{% from "_head.html" import page_head %}
+{% block title %}{{ s.ID }}{% endblock %}
+{% macro quotes(list) %}
+  {% if list %}
+  <details class="quote"><summary>Source text</summary>
+    {% for q in list %}{% if q.quote %}<blockquote>{{ q.quote }}<cite>{{ q.location }}{% if q.source_id %} · {{ q.source_id }}{% endif %}</cite></blockquote>{% endif %}{% endfor %}
+  </details>
+  {% endif %}
+{% endmacro %}
+{% macro results_table(rows) %}
+  <div class="table-wrap">
+  <table class="data results">
+    <thead><tr><th>Arm</th><th>Measure</th><th>When</th><th class="num">n</th><th class="num">Events</th><th class="num">Value</th><th class="num">p</th><th>Read from</th></tr></thead>
+    <tbody>
+    {% for r in rows %}
+    <tr>
+      <td>{{ r.arm }}</td>
+      <td>{{ r.endpoint }}{% if r.subgroup %}<span class="sub">{{ r.subgroup }}</span>{% endif %}</td>
+      <td>{{ r.timepoint_as_written or (r.timepoint_value ~ " " ~ r.timepoint_unit if r.timepoint_value else "") }}</td>
+      <td class="num">{{ r.n }}</td>
+      <td class="num">{{ r.events }}</td>
+      <td class="num">{% if r.value %}{{ r.value }}{% if r.value_unit %} <span class="sub">{{ r.value_unit }}</span>{% endif %}{% if r.statistic_type %}<span class="sub">{{ r.statistic_type | label }}</span>{% endif %}{% if r.variability_low or r.variability_high %}<span class="sub">{{ r.variability_low }}–{{ r.variability_high }}</span>{% elif r.variability_value %}<span class="sub">± {{ r.variability_value }}</span>{% endif %}{% endif %}</td>
+      <td class="num">{{ r.p_value }}</td>
+      <td>{% if r.as_written %}<details class="quote"><summary>{{ r.location or "text" }}</summary><blockquote>{{ r.as_written }}</blockquote></details>{% endif %}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+{% endmacro %}
+{% block pane %}
+{{ page_head(s.ID, s.topics | join(" · ")) }}
+<main class="history"><div class="history-inner study">
+  <p class="crumb">{% for t in s.topics %}<a href="/topics/{{ t }}/studies">{{ t }}</a> / {% endfor %}{{ s.ID }}</p>
+  <h2 class="study-title">{{ s.title or s.ID }}</h2>
+  <p class="meta">
+    <span>{{ (s.status or "") | lower | label }}</span>
+    {% if s.species %}<span>{{ s.species }}</span>{% endif %}
+    {% if s.main.year %}<span>{{ s.main.year }}</span>{% endif %}
+    <span class="pill design">{{ kinds.get(s.study_kind, s.study_kind | label) }}</span>
+    {% if s.n_enrolled %}<span class="pill">{{ s.n_enrolled }} enrolled</span>{% endif %}
+    {% if s.main.access == "abstract_only" %}<span class="pill warn" title="Only the abstract was available: values are from the abstract">abstract only</span>{% endif %}
+  </p>
+
+  <div class="three">
+    <section class="card"><h3>Classification</h3>
+      <dl class="kv">
+        {% if s.condition %}<dt>Condition</dt><dd>{{ s.condition | replace("|", ", ") }}</dd>{% endif %}
+        {% if s.intervention %}<dt>Intervention</dt><dd>{{ s.intervention }}</dd>{% endif %}
+        <dt>Design</dt><dd>{{ kinds.get(s.study_kind, s.study_kind | label) }}{% if s.study_type %} · {{ s.study_type | lower }}{% endif %}</dd>
+        {% if s.country %}<dt>Country</dt><dd>{{ s.country | replace("|", ", ") }}</dd>{% endif %}
+        <dt>Sponsor</dt><dd>{{ (s.sponsor | replace("|", ", ")) or "not stated" }}</dd>
+        {% if s.primary_outcome %}<dt>Primary outcome</dt><dd>{{ s.primary_outcome }}</dd>{% endif %}
+      </dl>
+    </section>
+    <section class="card"><h3>Sites</h3>
+      {% if s.sites %}<ul class="plain">{% for x in s.sites[:12] %}<li>{{ x.Facility or "—" }}{% if x.City or x.Country %}<span class="sub">{{ [x.City, x.Country] | select | join(", ") }}</span>{% endif %}</li>{% endfor %}</ul>
+        {% if s.sites | length > 12 %}<p class="sub">+ {{ s.sites | length - 12 }} more</p>{% endif %}
+      {% else %}<p class="sub">No site on file.</p>{% endif %}
+    </section>
+    <section class="card"><h3>KOLs</h3>
+      {% if s.kols %}<ul class="plain">{% for p in s.kols %}<li>{{ p.Name }}<span class="sub">{{ p.why }}{% if p.is_corresponding == "yes" %} · corresponding{% endif %}{% if p.Affiliation %} · {{ p.Affiliation | truncate(70, True, "…") }}{% endif %}</span></li>{% endfor %}</ul>
+      {% else %}<p class="sub">No first or last author on file.</p>{% endif %}
+      {% if s.others %}<details class="quiet"><summary>{{ s.others | length }} other author{{ "" if s.others | length == 1 else "s" }}</summary>
+        <p class="sub">{{ s.others | map(attribute="Name") | join(", ") }}</p></details>{% endif %}
+      <p class="sub why-kol">A paper's first and last authors usually lead it; for a trial, its study director.</p>
+    </section>
+  </div>
+
+  {% if s.summary %}
+  <details class="block"><summary>Study description</summary><p>{{ s.summary }}</p></details>
+  {% endif %}
+
+  {% if s.inclusion or s.exclusion %}
+  <div class="two">
+    <section class="card"><h3>Inclusion criteria</h3><p class="pre">{{ s.inclusion or "none listed" }}</p></section>
+    <section class="card"><h3>Exclusion criteria</h3><p class="pre">{{ s.exclusion or "none listed" }}</p></section>
+  </div>
+  {% endif %}
+
+  <p class="links big-links">
+  {% for so in s.sources %}
+    {% if so.pmid %}<a href="https://pubmed.ncbi.nlm.nih.gov/{{ so.pmid }}/" target="_blank" rel="noopener noreferrer">Open on PubMed ↗</a>{% endif %}
+    {% if so.doi %}<a href="https://doi.org/{{ so.doi }}" target="_blank" rel="noopener noreferrer">Open the paper ↗</a>{% endif %}
+  {% endfor %}
+  </p>
+
+  <h3 class="more-head">More from the paper</h3>
+  <details class="block"><summary>Arms &amp; doses ({{ s.arms | length }})</summary>
+    <div class="arms">
+    {% for a in s.arms %}
+      <article class="card arm">
+        <header><h3>{{ a.arm_label or a.arm_id }}</h3>
+          {% if a.is_control == "yes" %}<span class="pill">control</span>{% endif %}
+          <span class="sub">{% if a.n_assigned %}{{ a.n_assigned }} assigned{% endif %}{% if a.n_analysed %} · {{ a.n_analysed }} analysed{% endif %}</span></header>
+        {% if a.doses %}
+        <ul class="doses">
+          {% for d in a.doses %}
+          <li><b>{{ d.drug }}</b> {{ d.dose_value }}{% if d.dose_value_max %}–{{ d.dose_value_max }}{% endif %} {{ d.dose_unit }}
+            {% if d.route %}<span class="sub">{{ d.route | replace("|", " or ") }}</span>{% endif %}
+            {% if d.frequency %}<span class="sub">{{ d.frequency }}</span>{% endif %}
+            {% if d.dose_duration %}<span class="sub">{{ d.dose_duration }}</span>{% endif %}</li>
+          {% endfor %}
+        </ul>
+        {% endif %}
+        {{ quotes(a.quotes) }}
+      </article>
+    {% endfor %}
+    </div>
+  </details>
+  {% for kind, title in [("outcome", "Outcomes"), ("adverse_event", "Adverse events"), ("baseline", "Baseline (at entry)")] %}
+  <details class="block"><summary>{{ title }} ({{ s.results[kind] | length }})</summary>
+    {% if s.results[kind] %}{{ results_table(s.results[kind]) }}{% else %}<p class="sub">None stored.</p>{% endif %}
+  </details>
+  {% endfor %}
+  <details class="block"><summary>Every extracted field, with its source text ({{ s.fields | length }})</summary>
+    <dl class="facts">
+    {% for f in s.fields %}
+      <div><dt>{{ f.name | label }}</dt><dd>{{ f.value | replace("|", ", ") | plain }}{{ quotes(f.quotes) }}</dd></div>
+    {% endfor %}
+    </dl>
+  </details>
+  <details class="block"><summary>Sources ({{ s.sources | length }})</summary>
+    <ul class="sources">
+    {% for so in s.sources %}
+      <li><b>{{ so.title }}</b>
+        <span class="sub">{{ so.role }} · {{ so.doc_type | label }}{% if so.year %} · {{ so.year }}{% endif %} · {{ so.access | label }}</span></li>
+    {% endfor %}
+    </ul>
+  </details>
+</div></main>
+{% endblock %}

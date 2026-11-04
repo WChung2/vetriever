@@ -4,7 +4,8 @@
 ledger reserves the worst case (the prompt plus the maximum output, at the settings prices)
 and refuses if that could pass the cap; afterwards the real usage is written to
 corpus/spend.csv. The ledger lives on disk, so the cap holds across runs.
-Every call is saved to corpus/calls/<doc>/ unless save_calls is off.
+Every call, with the model's summary of its thinking, is saved to corpus/calls/<doc>/
+unless save_calls is off.
 
 `FakeGemini` answers without a network call, so tests cost nothing.
 """
@@ -70,17 +71,25 @@ class Gemini:
         self.client = genai.Client(api_key=key)
 
     def generate(self, model, system, prompt, schema, thinking, max_output, step=""):
+        """The answer, the token counts, and the model's summary of its thinking."""
         from google.genai import types
+        # "none" sends no thinking setting, for models that refuse a thinking level
+        # (Gemini 2.5 Flash-Lite thinks only when given a thinking budget)
+        thinking_config = None if thinking == "none" else types.ThinkingConfig(
+            thinking_level=thinking, include_thoughts=True)
         r = self.client.models.generate_content(
             model=model, contents=prompt,
             config=types.GenerateContentConfig(
                 system_instruction=system or None, response_mime_type="application/json",
                 response_json_schema=schema, max_output_tokens=max_output,
-                thinking_config=types.ThinkingConfig(thinking_level=thinking)))
+                thinking_config=thinking_config))
         u = r.usage_metadata
-        return r.text or "", {"input": u.prompt_token_count or 0,
-                              "output": u.candidates_token_count or 0,
-                              "thoughts": u.thoughts_token_count or 0}
+        parts = (r.candidates[0].content.parts or []) if r.candidates and r.candidates[0].content else []
+        text = "".join(p.text or "" for p in parts if not p.thought)
+        thoughts = "\n".join(p.text or "" for p in parts if p.thought)
+        return text, {"input": u.prompt_token_count or 0,
+                      "output": u.candidates_token_count or 0,
+                      "thoughts": u.thoughts_token_count or 0}, thoughts
 
 
 def _empty_answer(schema: dict):
@@ -106,7 +115,7 @@ class FakeGemini:
     def generate(self, model, system, prompt, schema, thinking, max_output, step=""):
         self.calls.append({"model": model, "system": system, "prompt": prompt})
         answer = json.dumps(self.responder(step, prompt, schema))
-        return answer, {"input": len(system + prompt) // 4, "output": len(answer) // 4, "thoughts": 0}
+        return answer, {"input": len(system + prompt) // 4, "output": len(answer) // 4, "thoughts": 0}, ""
 
 
 class LLM:
@@ -125,17 +134,20 @@ class LLM:
 
     def price(self, model: str) -> dict:
         prices = self.cfg["prices"]
-        if not self.fake and date.today().isoformat() > prices["valid_until"]:
-            raise BudgetExceeded(f"prices in settings.toml expired on {prices['valid_until']}; "
-                                 "re-check them before paid calls")
         if model not in prices:
             raise BudgetExceeded(f"no price for {model} in settings.toml")
+        # a model whose price changes before the others carries its own valid_until
+        until = prices[model].get("valid_until", prices["valid_until"])
+        if not self.fake and date.today().isoformat() > until:
+            raise BudgetExceeded(f"the price of {model} in settings.toml expired on {until}; "
+                                 "re-check it before paid calls")
         return prices[model]
 
     def call(self, step: str, prompt: str, schema: dict, system: str = "", doc: str = "_"):
         model = self.cfg["models"][step]
         thinking = self.cfg["thinking"][step]
-        max_out = self.cfg["spending"]["max_output_tokens"]
+        spend = self.cfg["spending"]
+        max_out = spend.get("max_output_tokens_by_step", {}).get(step, spend["max_output_tokens"])
         p = self.price(model)
         # ~3 characters per token over-estimates English text: errs towards stopping early
         worst = (len(system + prompt) / 3 * p["input"] + max_out * p["output"]) / 1e6
@@ -143,8 +155,8 @@ class LLM:
         try:
             for attempt in range(3):
                 try:
-                    text, usage = self.backend.generate(model, system, prompt, schema, thinking,
-                                                       max_out, step=step)
+                    text, usage, thoughts = self.backend.generate(
+                        model, system, prompt, schema, thinking, max_out, step=step)
                     break
                 except Exception as e:
                     if getattr(e, "code", None) not in RETRY_CODES or attempt == 2:
@@ -156,7 +168,7 @@ class LLM:
         usd = (usage["input"] * p["input"] + (usage["output"] + usage["thoughts"]) * p["output"]) / 1e6
         self.ledger.settle(worst, self._row(step, doc, model, usage, usd))
         if self.save:
-            self._save(step, doc, model, system, prompt, schema, text, usage, usd)
+            self._save(step, doc, model, system, prompt, schema, text, usage, usd, thoughts)
         return json.loads(text)
 
     @staticmethod
@@ -166,11 +178,11 @@ class LLM:
                 "output_tokens": usage.get("output", 0),
                 "thoughts_tokens": usage.get("thoughts", 0), "usd": round(usd, 6)}
 
-    def _save(self, step, doc, model, system, prompt, schema, text, usage, usd):
+    def _save(self, step, doc, model, system, prompt, schema, text, usage, usd, thoughts):
         folder = self.corpus / "calls" / doc
         folder.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%dT%H%M%S%f")
         (folder / f"{stamp}_{step}.json").write_text(json.dumps(
             {"step": step, "model": model, "fake": self.fake, "system": system, "prompt": prompt,
-             "schema": schema, "answer": text, "usage": usage, "usd": usd},
+             "schema": schema, "thoughts": thoughts, "answer": text, "usage": usage, "usd": usd},
             ensure_ascii=False, indent=1), encoding="utf-8")

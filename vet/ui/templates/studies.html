@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% from "_head.html" import page_head %}
+{% block title %}All studies{% endblock %}
+{% block pane %}
+{{ page_head("All studies", (rows | length) ~ " in the database") }}
+<main class="history"><div class="history-inner">
+<p class="lede">Every study extracted, whichever search brought it in. Click a study for its sites, investigators, criteria and results.</p>
+{% set topic = "" %}
+{% include "_studies_table.html" %}
+</div></main>
+{% endblock %}

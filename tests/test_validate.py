@@ -134,7 +134,8 @@ def test_each_error_is_caught(check, break_it):
 
 def test_truncated_quote_is_allowed():
     t = fixture.clean(CB)
-    ev(t, "n_enrolled").update(quote="x" * 501, quote_truncated="yes")
+    e = ev(t, "n_enrolled")
+    e.update(quote=f"{e['value']} dogs " + "x" * 501, quote_truncated="yes")
     assert checks(t) == set()
 
 
@@ -185,3 +186,134 @@ def test_header_order_is_checked(tmp_path):
     path.write_text("\n".join([",".join(cols)] + lines[1:]) + "\n")
     tables, headers = load_folder(tmp_path, tmp_path)
     assert "header" in checks(tables, headers=headers)
+
+
+# -- against the documents' own text --------------------------------------------------------
+
+def with_texts(t: dict, root):
+    """Give each document a text holding exactly the quotes and copies that cite it."""
+    from collections import defaultdict
+
+    from vet.validate import VERBATIM
+    by_doc = defaultdict(list)
+    for e in t["evidence"]:
+        by_doc[e["source_id"]].append(e["quote"])
+    for table, rows in t.items():
+        for f in CB.tables.get(table, []):
+            if VERBATIM.search(f.name) and table not in ("evidence", "conflicts"):
+                for r in rows:
+                    by_doc[r.get("source_id") or fixture.DOC].append(r.get(f.name, ""))
+    for src in t["sources"]:
+        path = root / src["text_file"]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("\n".join(by_doc[src["source_id"]]), "utf-8")
+    return {i.check for i in validate(t, CB, root=root)}
+
+
+def test_quotes_and_copies_found_in_the_documents_pass(tmp_path):
+    assert with_texts(fixture.clean(CB), tmp_path) == set()
+
+
+def test_pdf_line_breaks_and_hyphenation_do_not_matter(tmp_path):
+    t = fixture.clean(CB)
+    with_texts(t, tmp_path)
+    path = tmp_path / f"docs/{fixture.DOC}.txt"
+    path.write_text(path.read_text().replace("rescue within", "res- cue\nwith in"), "utf-8")
+    assert {i.check for i in validate(t, CB, root=tmp_path)} == set()
+
+
+def test_a_quote_missing_from_its_document_is_caught(tmp_path):
+    t = fixture.clean(CB)
+    with_texts(t, tmp_path)
+    ev(t, "n_enrolled")["quote"] += " in Antarctica"
+    assert "quote_not_in_document" in {i.check for i in validate(t, CB, root=tmp_path)}
+
+
+def test_a_copied_field_missing_from_the_documents_is_caught(tmp_path):
+    t = fixture.clean(CB)
+    with_texts(t, tmp_path)
+    t["results"][0]["as_written"] = "3/29 dogs given analgesic X needed no rescue"
+    assert "not_in_document" in {i.check for i in validate(t, CB, root=tmp_path)}
+
+
+def test_a_missing_text_file_is_reported_not_skipped(tmp_path):
+    t = fixture.clean(CB)
+    with_texts(t, tmp_path)
+    (tmp_path / f"docs/{fixture.FDA}.txt").unlink()
+    assert "no_text" in {i.check for i in validate(t, CB, root=tmp_path)}
+
+
+def test_a_value_must_be_in_its_own_quote():
+    t = fixture.clean(CB)
+    ev(t, "n_enrolled")["quote"] = "dogs were enrolled"
+    assert checks(t) == {"value_not_in_quote"}
+
+
+@pytest.mark.parametrize("field, value, quote", [
+    ("n_enrolled", "43", "Forty-three dogs were enrolled"),
+    ("n_enrolled", "120", "one hundred and twenty dogs"),
+    ("n_enrolled", "1200", "1,200 dogs"),
+    ("Started date", "2018-04", "from April 2018 to October 2020")])
+def test_numbers_in_words_and_dates_as_written_count(field, value, quote):
+    t = fixture.clean(CB)
+    t["studies"][0][field] = value
+    ev(t, field).update(value=value, quote=quote)
+    assert "value_not_in_quote" not in checks(t)
+
+
+def test_adverse_event_fields_only_on_adverse_event_rows():
+    t = fixture.clean(CB)
+    t["results"][0].update(result_kind="outcome", ae_fatal="died")
+    assert checks(t) == {"not_applicable_filled"}
+    t["results"][0].update(result_kind="adverse_event", endpoint="vomiting")
+    assert checks(t) == set()
+
+
+def test_one_dose_may_have_several_routes():
+    t = fixture.clean(CB)
+    t["arm_doses"][0]["route"] = "IV|PO"
+    ev_rows = [e for e in t["evidence"] if e["field"] == "route"]
+    for e in ev_rows:
+        e.update(value="IV|PO")
+    assert checks(t) == set()
+
+
+@pytest.mark.parametrize("change, check", [
+    ({"value": "4"}, "value_not_in_quote"),             # the number isn't in its sentence
+    ({"p_value": "<0.01"}, "value_not_in_quote"),
+    ({"events": "31"}, "events_more_than_n"),
+    ({"result_kind": ""}, "missing_value")])
+def test_results_numbers_are_checked_against_their_sentence(change, check):
+    t = fixture.clean(CB)
+    t["results"][0].update(change)
+    assert check in checks(t)
+
+
+def test_a_denominator_from_a_table_header_counts_when_it_is_the_arm_size():
+    t = fixture.clean(CB)
+    t["results"][0]["as_written"] = "needed rescue within 24 h | 3 |"     # n=29 only in the header
+    t["results"][0]["n"] = t["arms"][1]["n_analysed"]
+    assert "value_not_in_quote" not in checks(t)
+
+
+def test_copied_passages_may_be_joined_and_each_is_checked(tmp_path):
+    t = fixture.clean(CB)
+    with_texts(t, tmp_path)
+    path = tmp_path / f"docs/{fixture.DOC}.txt"
+    path.write_text(path.read_text() + "\nFifty dogs were screened.\nSee Figure 1.\nTwo were withdrawn.", "utf-8")
+    t["studies"][0]["flow_as_written"] = "Fifty dogs were screened. … Two were withdrawn."
+    t["evidence"].append({**ev(t, "age_as_written"), "field": "flow_as_written",
+                          "value": t["studies"][0]["flow_as_written"]})
+    assert {i.check for i in validate(t, CB, root=tmp_path)} == set()
+    t["studies"][0]["flow_as_written"] = "Fifty dogs were screened. Two were withdrawn."
+    ev(t, "flow_as_written")["value"] = t["studies"][0]["flow_as_written"]
+    assert "not_in_document" in {i.check for i in validate(t, CB, root=tmp_path)}
+
+
+@pytest.mark.parametrize("value, quote, found", [
+    ("4", "rescue within 24 h", False), ("0.1", "CI 0.15-0.9", False), ("3", "3.5 mg", False),
+    ("0.017", "P = .017", True), ("87400", "87 400 cells", True), ("-16.4", "−16.4", True),
+    ("0", "no dogs relapsed", True), ("29", "3/29 dogs", True)])
+def test_numbers_stand_on_their_own(value, quote, found):
+    from vet.validate import _in_quote
+    assert _in_quote(value, "number", quote) is found

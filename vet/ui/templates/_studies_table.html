@@ -1,0 +1,27 @@
+{# clinical_ai's vet table, with the essentials only: click a row for the study #}
+{% if not rows %}
+<p class="empty">No studies extracted{% if topic %} for this search{% endif %} yet.</p>
+{% else %}
+<div class="table-wrap">
+<table class="data studies">
+  <colgroup><col class="c-title"><col class="c-status"><col class="c-species"><col class="c-cond"><col class="c-int"><col class="c-enr"><col class="c-sites"><col class="c-kols"><col class="c-sponsor"></colgroup>
+  <thead><tr><th>Title</th><th>Status</th><th>Species</th><th>Condition</th><th>Intervention</th><th class="num">Enrolled</th><th class="num">Sites</th><th title="first and last authors of a paper; the study director of a trial">KOLs</th><th>Sponsor</th></tr></thead>
+  <tbody>
+  {% for r in rows %}
+  <tr>
+    <td class="title-cell"><div class="clamp" title="{{ r.title }}"><a href="/studies/{{ r.ID }}">{{ r.title or r.ID }}</a></div>
+      <span class="sub">{{ r.first_author }}{% if r.year %} · {{ r.year }}{% endif %} · {{ kinds.get(r.study_kind, r.study_kind | label) }}{% if r.access == "abstract_only" %} · <span class="warn-text">abstract only</span>{% endif %}</span></td>
+    <td class="nowrap">{{ (r.status or "—") | lower | label }}</td>
+    <td class="words" title="{{ r.species_raw }}">{{ r.species or "—" }}</td>
+    <td class="text"><div class="clamp" title="{{ r.condition }}">{{ (r.condition | replace("|", ", ")) or "—" }}</div></td>
+    <td class="text"><div class="clamp" title="{{ r.intervention }}">{{ r.intervention or "—" }}</div></td>
+    <td class="num">{{ r.enrolled or "—" }}</td>
+    <td class="num">{{ r.sites }}</td>
+    <td class="names">{% for n in r.kols %}<span>{{ n }}</span>{% else %}—{% endfor %}</td>
+    <td class="text"><div class="clamp" title="{{ r.sponsor | replace('|', ', ') }}">{{ (r.sponsor | replace("|", ", ")) or "—" }}</div></td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}

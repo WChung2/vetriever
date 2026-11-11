@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% from "ui/layout.html" import stack, page_header %}
+{% from "ui/data.html" import caption %}
+{% block title %}All studies{% endblock %}
+{% block content %}
+{{ page_header("All studies", (rows | length) ~ " in the database") }}
+{% call stack(gap=4) %}
+  {{ caption("Every study extracted, whichever search brought it in. Click a study for its sites, investigators, criteria and results.", tone=none) }}
+  {% set topic = "" %}{% include "studies/_table.html" %}
+{% endcall %}
+{% endblock %}

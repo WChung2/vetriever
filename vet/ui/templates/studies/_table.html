@@ -1,0 +1,22 @@
+{#- clinical_ai's vet table, with the essentials only: click a row for the study. The kit's cells
+    never wrap, so long text is cut short here and shown whole on hover. -#}
+{% from "ui/table.html" import table, cell %}
+{% from "ui/data.html" import caption, link %}
+{% call table([{"label": "Title"}, {"label": "Status"}, {"label": "Species"}, {"label": "Condition"},
+               {"label": "Intervention"}, {"label": "Enrolled"}, {"label": "Sites"}, {"label": "KOLs"}, {"label": "Sponsor"}],
+              rows=rows, empty_title="No studies extracted" ~ (" for this search" if topic else "") ~ " yet", empty_icon="database") %}
+  {% for r in rows %}
+  <tr>
+    {% call cell() %}{{ link((r.title or r.ID) | truncate(70, True, "…"), "/studies/" ~ r.ID, title=r.title) }}
+      {{ caption(r.first_author ~ ((" · " ~ r.year) if r.year else "") ~ " · " ~ kinds.get(r.study_kind, r.study_kind | label) ~ (" · abstract only" if r.access == "abstract_only" else "")) }}{% endcall %}
+    {{ cell((r.status or "—") | lower | label) }}
+    {{ cell(r.species or "—", title=r.species_raw) }}
+    {{ cell(((r.condition | replace("|", ", ")) or "—") | truncate(40, True, "…"), title=r.condition) }}
+    {{ cell((r.intervention or "—") | truncate(40, True, "…"), title=r.intervention) }}
+    {{ cell(r.enrolled or "—", numeric=true) }}
+    {{ cell(r.sites, numeric=true) }}
+    {% call cell(title="first and last authors of a paper; the study director of a trial") %}{% for n in r.kols %}<div>{{ n }}</div>{% else %}—{% endfor %}{% endcall %}
+    {{ cell(((r.sponsor | replace("|", ", ")) or "—") | truncate(30, True, "…"), title=r.sponsor | replace("|", ", ")) }}
+  </tr>
+  {% endfor %}
+{% endcall %}

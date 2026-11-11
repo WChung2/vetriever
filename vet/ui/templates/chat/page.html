@@ -1,0 +1,74 @@
+{#- A search's conversation with the Planner, its steps, and what the vet can do now. -#}
+{% extends "base.html" %}
+{% from "topics/macros.html" import topic_header %}
+{% from "ui/layout.html" import stack, row %}
+{% from "ui/data.html" import card, badge, caption, empty_state, item, item_list, description_list, description_item, link %}
+{% from "ui/disclosure.html" import collapsible %}
+{% from "ui/feedback.html" import alert %}
+{% block title %}{{ s.title }}{% endblock %}
+{% block content %}
+{{ topic_header(name, s, "chat", counts) }}
+{% call stack(gap=4) %}
+{% if not items and p.stage != "running" %}{{ empty_state("No conversation saved for this search.", icon_name="message-square") }}{% endif %}
+{% for m in items %}
+  {% if m.who == "vet" %}
+    {% call card(size="sm", title="You") %}<p>{{ m.text }}</p>{% endcall %}
+  {% elif m.who == "planner" and m.kind == "round" %}
+    {% call card(title="Planner · round " ~ m.n, description=(m.time | day) if m.time else none, id=("now" if m.live else none)) %}
+      {% call stack(gap=4) %}
+      {% if m.restatement %}<p>{{ m.restatement }}</p>{% endif %}
+      {% if m.chips %}
+        {% call stack(gap=2) %}
+          <h4>Your question</h4>
+          {% call row(gap=2) %}{% for c in m.chips %}{{ badge(c.item ~ ((" · " ~ sources.get(c.source, c.source)) if c.source else ""), "secondary" if c.source == "suggestion" else "outline") }}{% endfor %}{% endcall %}
+        {% endcall %}
+      {% endif %}
+      {% if m.terms %}
+        {% call stack(gap=2) %}
+          <h4>The search</h4>
+          {% for block, ts in m.terms | groupby("block") %}
+            {% call row(gap=2) %}<b>{{ block }}</b>{% for t in ts %}{{ badge(t.term ~ ((" " ~ (t.hits | thousands)) if t.hits is not none else ""), "outline") }}{% if not loop.last %}{{ caption("or") }}{% endif %}{% endfor %}{% endcall %}
+          {% endfor %}
+          {% if m.hits %}<p><b>{{ m.hits | thousands }}</b> PubMed records for the whole search</p>{% endif %}
+          {% if m.problems %}{% call collapsible((m.problems | length) ~ " term" ~ ("" if m.problems | length == 1 else "s") ~ " changed by code") %}{% for pr in m.problems %}<p>{{ pr }}</p>{% endfor %}{% endcall %}{% endif %}
+        {% endcall %}
+      {% endif %}
+      {% if m.live %}
+        {% if p.problem %}{{ alert(p.problem, variant="destructive") }}{% endif %}
+        {% include "chat/_plan_form.html" %}
+      {% else %}
+        {% if m.questions %}
+          {% call stack(gap=2) %}
+            <h4>Questions</h4>
+            {% call description_list() %}
+              {% for q in m.questions %}
+                {% call description_item(q.question) %}
+                  {% call row(gap=2) %}
+                    {% for o in q.options %}{{ badge(o, "primary" if o == q.answer else "outline") }}{% endfor %}
+                    {% if q.answer and q.answer not in q.options %}{{ badge(q.answer, "primary") }}{% endif %}
+                  {% endcall %}
+                {% endcall %}
+              {% endfor %}
+            {% endcall %}
+          {% endcall %}
+        {% endif %}
+        {% if m.papers %}
+          {% call stack(gap=2) %}
+            <h4>{{ m.papers | length }} papers this search finds</h4>
+            {% call item_list() %}
+              {% for pp in m.papers %}{{ item(pp.title, "PMID " ~ pp.key, actions=badge("👍" if pp.mark == "yes" else ("👎" if pp.mark == "no" else "–"), "ghost", title="your mark"), clamp=false) }}{% endfor %}
+            {% endcall %}
+          {% endcall %}
+        {% endif %}
+      {% endif %}
+      {% endcall %}
+    {% endcall %}
+  {% elif m.who == "planner" %}
+    {% call card(size="sm", title="Planner") %}<p>{{ m.text }}</p>{% endcall %}
+  {% else %}
+    {% call caption(icon_name="dot") %}{{ m.text }}{% if m.cost %} · <b>{{ m.cost | usd }}</b>{% endif %}{% if m.link %} · {{ link("open", "/topics/" ~ name ~ "/" ~ m.link) }}{% endif %}{% endcall %}
+  {% endif %}
+{% endfor %}
+{% include "chat/_panel.html" %}
+{% endcall %}
+{% endblock %}

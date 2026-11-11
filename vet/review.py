@@ -12,7 +12,10 @@ The brake, so the search grows enough but not too much:
    depends on it.
 Follow-ups (references, citing papers, similar articles) and extra queries only screen
 records that name the topic's species, at most `round_max_new` new records a round.
-Code stops when a round adds no new kept record, or after `review_rounds` rounds.
+
+Code never starts a round on its own. A round ends with a proposal for the next one, which
+nothing runs until the vet decides (vet/budget.py): `first_round`, then `widen` once for each
+time the vet chooses to. A round cut off part-way is carried on by `carry_on`.
 """
 import json
 import re
@@ -21,9 +24,11 @@ import tomllib
 from collections import Counter
 from datetime import date
 
+from . import budget
 from . import connectors as c
 from . import search as s
-from .screen import screen
+from .llm import BudgetExceeded
+from .screen import Cut, screen
 from .settings import ROOT, settings
 
 KEPT = ("keep", "lead")
@@ -32,7 +37,7 @@ SAVE_EVERY = 100
 
 def relevant(r: dict) -> bool:
     """A kept record that reports the condition (or a related one) with its quote: what the
-    stop rule and the yields count. Records kept only because a drop lacked its quote, and
+    round's advice and the yields count. Records kept only because a drop lacked its quote, and
     healthy animals given a treatment, are kept but don't count."""
     a = r.get("answers") or {}
     a = json.loads(a) if isinstance(a, str) else a
@@ -360,52 +365,112 @@ def screen_new(name, topic, db, llm, rnd, say) -> int:
     say(f"  screening {len(todo)} records")
     n = 0
     for i in range(0, len(todo), SAVE_EVERY):      # saved as it goes: a crash loses one chunk
-        results = screen(name, topic, todo[i:i + SAVE_EVERY], llm)
+        try:
+            results = screen(name, topic, todo[i:i + SAVE_EVERY], llm)
+        except Cut as cut:                         # what was answered is paid for: keep it
+            s.save_screening(db, name, rnd, cut.done)
+            raise cut.why from None
         s.save_screening(db, name, rnd, results)
         n += sum(relevant(r) for r in results)
     return n
 
 
-def run(name: str, llm, http: c.Http | None = None, db: sqlite3.Connection | None = None,
-        say=print) -> dict:
-    """Search, screen and review until a round adds no new kept record."""
+def propose(name, topic, llm, http, db, rnd) -> dict:
+    """What round `rnd` would do, kept for the vet: one review call; nothing is run."""
+    terms = current_terms(db, name, topic)
+    message = "Counts after round {}:\n{}".format(rnd - 1, json.dumps(
+        counts(name, topic, terms, db, http, rnd), ensure_ascii=False, indent=0))
+    answer = llm.call("review", message, SCHEMA, system=system_prompt(topic), doc=f"review_{name}")
+    log(db, name, rnd, "reasoning", answer["reasoning"], "")
+    budget.save_proposal(db, name, rnd, {"answer": answer, "message": message})
+    return answer
+
+
+def _close_round(name, topic, db, llm, http, rnd, say) -> dict:
+    """Screen what the round found, judge what it added, propose the next round, then stop:
+    the vet decides. The budget is checked before the first paid call."""
+    n = len(s.to_screen(db, name))
+    need, left = budget.needed(n), llm.ledger.cap - llm.ledger.spent
+    if n and need > left:
+        raise BudgetExceeded(f"{n} records to screen need ${need:.2f} of budget, "
+                             f"and ${left:.2f} is left")
+    new_kept = screen_new(name, topic, db, llm, rnd, say)
+    added = db.execute("SELECT term FROM terms WHERE topic = ? AND added_round = ? AND "
+                       "removed_round IS NULL AND source = 'review'", (name, rnd)).fetchall()
+    judge_added(name, [{"term": t["term"]} for t in added], db, rnd)
+    judge_yields(name, db, rnd)
+    say(f"round {rnd}: {new_kept} new relevant records")
+    try:
+        say("working out what the next round could do")
+        propose(name, topic, llm, http, db, rnd + 1)
+    except BudgetExceeded:
+        budget.save_proposal(db, name, rnd + 1, None)
+        say("the budget doesn't cover a proposal for the next round")
+    budget.end_round(db, name, rnd, new_kept)
+    return {"round": rnd, "new_kept": new_kept,
+            "kept": sum(d in KEPT for d in decisions(db, name).values())}
+
+
+def first_round(name: str, llm, http: c.Http | None = None, db: sqlite3.Connection | None = None,
+                say=print) -> dict:
+    """Round 1: search, screen, and propose round 2. A second call carries on the same round."""
     cfg = settings()["pipeline"]
     http, db = http or c.Http(), db or s.connect()
     topic = load_topic(name)
     terms = current_terms(db, name, topic)
-    first = s.run_search(name, topic | {"terms": terms}, db, http, rnd=1)
-    say(f"round 1: PubMed {first['pubmed']}, Europe PMC (outside PubMed) {first['europepmc']}")
-    for p in first["problems"]:
-        say(f"  problem: {p}")
-    if first["pubmed"] + first["europepmc"] > cfg["screen_budget"]:
-        raise ValueError(f"{first['pubmed'] + first['europepmc']} records is more than the "
-                         f"screening budget ({cfg['screen_budget']}): narrow the search with "
-                         "the Planner first")
-    s.mark_found(db, name, 1, [k for k in topic.get("known", [])], "known")
-    if any(k.isdigit() for k in topic.get("known", [])):
-        s.pubmed_fetch(http, db, [k for k in topic.get("known", []) if k.isdigit()])
-    kept = screen_new(name, topic, db, llm, 1, say)
-    say(f"  kept {kept}")
-    system = system_prompt(topic)
-    rounds = [{"round": 1, "new_kept": kept}]
-    for rnd in range(2, cfg["review_rounds"] + 2):
-        message = "Counts after round {}:\n{}".format(rnd - 1, json.dumps(
-            counts(name, topic, terms, db, http, rnd), ensure_ascii=False, indent=0))
-        answer = llm.call("review", message, SCHEMA, system=system, doc=f"review_{name}")
-        log(db, name, rnd, "reasoning", answer["reasoning"], "")
-        did = act(name, topic, terms, answer, db, http, rnd, llm, system, message)
-        terms = current_terms(db, name, topic)
-        new_kept = screen_new(name, topic, db, llm, rnd, say)
-        judge_added(name, did["added"], db, rnd)
-        judge_yields(name, db, rnd)
-        terms = current_terms(db, name, topic)
-        say(f"round {rnd}: added {[t['term'] for t in did['added']]}, too broad "
-            f"{[b['term'] for b in did['too_broad']]}, new kept {new_kept}")
-        rounds.append({"round": rnd, "new_kept": new_kept})
-        if new_kept == 0:
-            say("  stop: this round added no new relevant record")
-            break
-    return {"rounds": rounds, "kept": sum(d in KEPT for d in decisions(db, name).values())}
+    budget.begin_round(db, name, 1)
+    if not db.execute("SELECT 1 FROM found WHERE topic = ? LIMIT 1", (name,)).fetchone():
+        first = s.run_search(name, topic | {"terms": terms}, db, http, rnd=1)
+        say(f"round 1: PubMed {first['pubmed']}, Europe PMC (outside PubMed) {first['europepmc']}")
+        for p in first["problems"]:
+            say(f"  problem: {p}")
+        if first["pubmed"] + first["europepmc"] > cfg["screen_budget"]:
+            raise ValueError(f"{first['pubmed'] + first['europepmc']} records is more than the "
+                             f"screening budget ({cfg['screen_budget']}): narrow the search with "
+                             "the Planner first")
+        s.mark_found(db, name, 1, [k for k in topic.get("known", [])], "known")
+        if any(k.isdigit() for k in topic.get("known", [])):
+            s.pubmed_fetch(http, db, [k for k in topic.get("known", []) if k.isdigit()])
+    return _close_round(name, topic, db, llm, http, 1, say)
+
+
+def widen(name: str, llm, http: c.Http | None = None, db: sqlite3.Connection | None = None,
+          say=print) -> dict:
+    """One more round: the proposal the vet has read, applied under the brake, then screened."""
+    http, db = http or c.Http(), db or s.connect()
+    st = budget.state(db, name)
+    if not st or not st["proposal"]:
+        raise ValueError(f"{name} has no proposal for a next round")
+    rnd, proposal = st["next_round"], json.loads(st["proposal"])
+    topic = load_topic(name)
+    terms = current_terms(db, name, topic)
+    budget.begin_round(db, name, rnd)
+    did = act(name, topic, terms, proposal["answer"], db, http, rnd, llm, system_prompt(topic),
+              proposal["message"])
+    say(f"round {rnd}: added {[t['term'] for t in did['added']]}, too broad "
+        f"{[b['term'] for b in did['too_broad']]}")
+    return _close_round(name, topic, db, llm, http, rnd, say)
+
+
+def carry_on(name: str, llm, http: c.Http | None = None, db: sqlite3.Connection | None = None,
+             say=print) -> dict:
+    """Start the search, or finish the round a stop cut off."""
+    db = db or s.connect()
+    open_rounds = [r["round"] for r in budget.rounds(db, name) if not r["ended"]]
+    if open_rounds and open_rounds[-1] > 1:
+        return widen(name, llm, http, db, say)
+    if open_rounds or budget.next_round(db, name) == 1:
+        return first_round(name, llm, http, db, say)
+    raise ValueError(f"{name} has no round to carry on: widening is the vet's decision")
+
+
+def ask_next(name: str, llm, http: c.Http | None = None, db: sqlite3.Connection | None = None,
+             say=print) -> dict:
+    """A proposal for the next round, when there is none: a search run before rounds were
+    decided one at a time, or one whose budget ran out before its proposal."""
+    http, db = http or c.Http(), db or s.connect()
+    say("working out what the next round could do")
+    return propose(name, load_topic(name), llm, http, db, budget.next_round(db, name))
 
 
 def gaps(name: str, coverage: dict, llm, http: c.Http | None = None,

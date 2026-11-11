@@ -313,6 +313,13 @@ def test_copied_passages_may_be_joined_and_each_is_checked(tmp_path):
 @pytest.mark.parametrize("value, quote, found", [
     ("4", "rescue within 24 h", False), ("0.1", "CI 0.15-0.9", False), ("3", "3.5 mg", False),
     ("0.017", "P = .017", True), ("87400", "87 400 cells", True), ("-16.4", "−16.4", True),
+    ("400", "87 400 cells", False), ("200", "1,200 dogs", False),
+    ("139.8", "Sodium mmol/L 135–148 141.2 ± 3.1 139.8 ± 3.1 2 0.11", True),
+    ("141.2", "Sodium mmol/L 135–148 141.2 ± 3.1 139.8 ± 3.1 2 0.11", True),
+    ("118", "Glucose mg/dL 70–120 104 ± 21 118 ± 25 -5 0.08", True),
+    ("104", "Glucose mg/dL 70–120 104 ± 21 118 ± 25 -5 0.08", True),
+    ("25", "Glucose mg/dL 70–120 104 ± 21 118 ± 25 -5 0.08", True),
+    ("143.7", "Na n 3 143.7 ± 2.6", True),       # a count, then a decimal mean: two numbers
     ("0", "no dogs relapsed", True), ("29", "3/29 dogs", True)])
 def test_numbers_stand_on_their_own(value, quote, found):
     from vet.validate import _in_quote

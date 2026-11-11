@@ -5,18 +5,24 @@ what the unit tests can't (they call the app in-process, with the server and bro
   2. it listens on 127.0.0.1 only: the machine's network address is refused
   3. htmx, the one script, is served and is the published release
   4. in a real browser (headless Chrome, when installed) no page has a blocked style or script
-     or a script error
-  5. a second `vet ui` on the same port stops, before opening any browser
+     or a script error: the Planner's form, the budget form, the widen panel, and a running
+     step's live progress (which polls the server every two seconds)
+  5. clicking Next from the bottom of a long list lands at the top of the next page, with the
+     header still on screen (a real click: only a browser can show where a page ends up)
+  6. a second `vet ui` on the same port stops, before opening any browser
 
 Only the process this script starts is stopped. Made-up data only, in a temporary folder; nothing
 leaves the machine (Chrome runs with its background services off and a throwaway profile).
 Run by scripts/check.sh (step 6), so locally and in CI alike:  uv run python scripts/ui_smoke.py
 """
+import asyncio
 import base64
 import hashlib
+import json
 import os
 import shutil
 import socket
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -27,13 +33,64 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-from tests.test_ui import HTMX_SHA384, TOPIC, make_db
+import websockets
 
-PAGES = ["/", "/?q=cats", f"/topics/{TOPIC}", f"/topics/{TOPIC}/chat", f"/topics/{TOPIC}/review",
+from tests.test_ui import HTMX_SHA384, PLAN, TOPIC, answers, make_db
+from vet import chat
+
+PLANNING, READY = "imha", "cie"       # topic files that exist; made-up states in the temp folder
+LONG_LIST = 60
+WHERE = """(function(){const r=document.scrollingElement,bar=document.querySelector('#topbar');
+return {page:document.querySelector('#records p').innerText,
+list:Math.round(document.querySelector('#records').getBoundingClientRect().top),
+head:Math.round(bar.getBoundingClientRect().top),
+headEnd:Math.round(bar.getBoundingClientRect().bottom),
+root:Math.round(r.scrollTop),window:innerHeight}})()"""
+PROPOSAL = {"answer": {"reasoning": "FIXTURE", "nothing_left": False, "extra_queries": [],
+                       "follow": [{"key": "1001", "how": "references"}],
+                       "term_changes": [{"action": "add", "term": "FIXTURE term"}]}, "message": ""}
+PAGES = ["/", "/?q=cats", f"/topics/{TOPIC}", f"/topics/{TOPIC}/chat", f"/topics/{PLANNING}/chat",
+         f"/topics/{READY}/chat", f"/topics/{TOPIC}/review",
          f"/topics/{TOPIC}/review?view=dropped", f"/topics/{TOPIC}/studies",
          f"/topics/{TOPIC}/who", "/studies", "/studies/VET-1", "/who", "/spending"]
 CHROME = ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "google-chrome",
           "google-chrome-stable", "chromium", "chromium-browser"]
+
+
+def stages(db: Path):
+    """The chat's stages, on made-up data: a Planner waiting, a search ready, a proposal waiting."""
+    state = db.parent / "plan" / PLANNING / "state.json"
+    state.parent.mkdir(parents=True)
+    state.write_text(json.dumps(PLAN | {"started": ""}), "utf-8")
+    con = sqlite3.connect(db)
+    with con:
+        for i in range(LONG_LIST):            # more than one page of records to review
+            key = f"long{i}"
+            con.execute("INSERT INTO records (key, title, abstract, year) VALUES (?, ?, ?, '2020')",
+                        (key, f"FIXTURE record {i}", "FIXTURE dogs after surgery, client-owned dogs"))
+            con.execute("INSERT INTO screening (topic, key, decision, rule, flags, summary, design, "
+                        "answers, round, date) VALUES (?, ?, 'keep', '', '', 's', 'retrospective', "
+                        "?, 1, '2026-11-03')", (TOPIC, key, json.dumps(answers())))
+        con.execute("INSERT INTO search_state VALUES (?, 2.0, '2026-11-03T00:00:00', 2, ?)",
+                    (TOPIC, json.dumps(PROPOSAL)))
+        con.execute("INSERT INTO search_rounds VALUES (?, 1, '2026-11-03T09:00:00', "
+                    "'2026-11-03T10:00:00', 3)", (TOPIC,))
+    con.close()
+
+
+def job(db: Path, state: str):
+    """A step running on the READY topic (only its row: nothing runs), or no step."""
+    con = chat.connect(db)
+    with con:
+        if state == "running":
+            con.execute("INSERT INTO jobs (topic, kind, state, request, started) VALUES "
+                        "(?, 'search', 'running', 'smoke', '2026-11-03T09:00:00')", (READY,))
+            con.execute("INSERT INTO chat (topic, n, role, kind, body, time) VALUES (?, 1, "
+                        "'event', 'progress', ?, '2026-11-03T09:00:00')",
+                        (READY, json.dumps({"text": "screening 3 records", "job": 1})))
+        else:
+            con.execute("UPDATE jobs SET state = 'done'")
+    con.close()
 
 
 def free_port() -> int:
@@ -82,6 +139,61 @@ def browser_problems(exe: str, url: str, profile: Path) -> list[str]:
         w in line for w in ("violates", "Refused", "Uncaught", "Failed to load", "Error"))]
 
 
+def next_from_the_bottom(exe: str, url: str, profile: Path) -> dict:
+    """Open a long list in a real Chrome, scroll to its bottom, click Next, and say where the
+    page ended up. Chrome is driven through its debugging port, on this machine only."""
+    port = free_port()
+    browser = subprocess.Popen([exe, "--headless=new", "--disable-gpu", "--no-first-run",
+                                "--no-default-browser-check", "--disable-background-networking",
+                                "--disable-component-update", "--disable-sync", "--no-sandbox",
+                                "--disable-extensions", f"--user-data-dir={profile}",
+                                f"--remote-debugging-port={port}", "--window-size=1280,900",
+                                "about:blank"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    async def drive() -> dict:
+        for _ in range(80):
+            try:
+                tabs = json.loads(get(f"http://127.0.0.1:{port}/json")[2])
+                break
+            except OSError:
+                await asyncio.sleep(0.25)
+        target = next(t for t in tabs if t["type"] == "page")["webSocketDebuggerUrl"]
+        async with websockets.connect(target, max_size=None) as ws:
+            sent = 0
+
+            async def call(method: str, **params) -> dict:
+                nonlocal sent
+                sent += 1
+                await ws.send(json.dumps({"id": sent, "method": method, "params": params}))
+                while True:
+                    answer = json.loads(await ws.recv())
+                    if answer.get("id") == sent:
+                        return answer.get("result", {})
+
+            async def run(code: str):
+                got = await call("Runtime.evaluate", expression=code, returnByValue=True)
+                return got["result"].get("value")
+            await call("Page.enable")
+            await call("Page.navigate", url=url)
+            await asyncio.sleep(1.5)
+            # instantly, as a person scrolling does: the page's CSS would animate a scripted scroll
+            await run("window.scrollTo({top: document.scrollingElement.scrollHeight, "
+                      "behavior: 'instant'})")
+            await asyncio.sleep(0.2)
+            await run("[...document.querySelectorAll('nav[aria-label=\"Pages\"] a')]"
+                      ".find(a=>a.innerText.includes('Next')).click()")
+            await asyncio.sleep(1.5)
+            return await run(WHERE)
+    try:
+        return asyncio.run(asyncio.wait_for(drive(), 40))
+    finally:
+        browser.terminate()                       # only the browser this script started
+        try:
+            browser.wait(10)
+        except subprocess.TimeoutExpired:
+            browser.kill()
+
+
 def main() -> int:
     failures = []
 
@@ -92,6 +204,7 @@ def main() -> int:
 
     work = Path(tempfile.mkdtemp(prefix="vet-ui-smoke-"))
     db = make_db(work)
+    stages(db)
     port = free_port()
     base = f"http://127.0.0.1:{port}"
     log = open(work / "server.log", "w+")  # noqa: SIM115 (closed in the finally below)
@@ -135,7 +248,7 @@ def main() -> int:
             print("  skip  no network address on this machine")
 
         print("3. htmx")
-        status, _, js = get(base + "/static/htmx.min.js")
+        status, _, js = get(base + "/_fjkit/vendor/htmx/htmx.min.js")    # fjkit's copy, every page
         check(status == 200 and base64.b64encode(hashlib.sha384(js).digest()).decode()
               == HTMX_SHA384, "served, and the published release")
 
@@ -147,10 +260,27 @@ def main() -> int:
                 check(not problems, f"{path} loads with nothing blocked")
                 for p in problems[:3]:
                     print("        " + p[-240:])
+            job(db, "running")
+            problems = browser_problems(exe, f"{base}/topics/{READY}/chat", work / "chrome")
+            status, _, live = get(f"{base}/topics/{READY}/live")
+            check(not problems and status == 200 and b"screening 3 records" in live,
+                  "a running step's progress is polled with nothing blocked")
+            for p in problems[:3]:
+                print("        " + p[-240:])
+            job(db, "done")
+            check("hx-refresh" in {k.lower() for k in get(f"{base}/topics/{READY}/live")[1]},
+                  "the page is told to reload when the step ends")
+            print("5. Next, from the bottom of a long list")
+            end = next_from_the_bottom(exe, f"{base}/topics/{TOPIC}/review?view=to_review",
+                                       work / "chrome-next")
+            check("page 2" in end["page"], "the next page opens")
+            check(end["head"] == 0 and end["root"] > 0, "the header stays on screen")
+            check(end["headEnd"] <= end["list"] <= end["window"] // 3,
+                  f"the list starts at the top of the window ({end['list']}px down)")
         else:
             print("  skip  no Chrome or Chromium installed")
 
-        print("5. a taken port")
+        print("6. a taken port")
         second = subprocess.run([sys.executable, "-m", "vet.cli", "--db", str(db), "ui",
                                  "--port", str(port)], cwd=ROOT, capture_output=True, text=True,
                                 timeout=30, check=False)

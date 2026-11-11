@@ -1,0 +1,30 @@
+{#
+  The rail: every search, newest first, the open one marked, as clinical_ai's search-records
+  rail. Each row says where the search is, what it has found, and its five steps:
+  ● done, ◐ next, ○ to come (ask, search and screen, review, full text, database).
+#}
+{% from "ui/button.html" import button %}
+{% from "ui/data.html" import empty_state, item, item_list %}
+{% from "ui/layout.html" import stack %}
+{% from "ui/sidebar.html" import sidebar %}
+{% set head %}
+  {% call stack(2) %}
+    <h2><strong>Your searches</strong></h2>
+    {{ button("New question", icon_name="plus", href="/") }}
+  {% endcall %}
+{% endset %}
+{% call sidebar(id="sidebar", label="Your searches", header=head) %}
+  {% call item_list() %}
+    {% for s in searches %}
+      {% set active = current == s.name %}
+      {% set steps = [] %}{% for st in s.steps %}{% set _ = steps.append(step_names[loop.index0] ~ ": " ~ ("done" if st == "done" else ("next" if st == "now" else "to come"))) %}{% endfor %}
+      {% set said %}{{ s.status }} · {{ s.line }}{% if s.date %} · {{ s.date | day }}{% endif %}
+        <span role="img" aria-label="{{ steps | join('; ') }}" title="{{ steps | join('; ') }}">{% for st in s.steps %}{{ "●" if st == "done" else ("◐" if st == "now" else "○") }}{% endfor %}</span>{% endset %}
+      {{ item(s.title, said, href="/topics/" ~ s.name, clamp=false, data_size="sm",
+              data_variant=("muted" if active else none), aria_current=("page" if active else none)) }}
+    {% endfor %}
+  {% endcall %}
+  {% if not searches %}
+    {{ empty_state("No searches yet", "Ask a question to start one.", icon_name="search") }}
+  {% endif %}
+{% endcall %}

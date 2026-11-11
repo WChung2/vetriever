@@ -16,17 +16,20 @@ structure = "low"    # 3.8-flash doesn't think at "low"; "medium" tested 2026-11
 review = "medium"
 
 [spending]
-cap_usd = 15.00         # hard stop for everything in corpus/spend.csv; raised per phase, with your OK
+cap_usd = 20.00         # hard stop for everything in corpus/spend.csv; raised per phase, with your OK
 max_output_tokens = 16384
 # extraction answers are long (a results table can be 50 rows), and thinking counts too
 max_output_tokens_by_step = { structure = 32768 }
 save_calls = true       # keep every prompt and answer in corpus/calls/ for auditing
+# what the screens quote before a paid step; measured, rounded up (decisions 38, 42)
+screen_usd_per_1000 = 1.00   # screening 1,000 records: $0.98 in the benchmark
+review_usd_per_call = 0.03   # one review call: $0.02 on average
 
 [pipeline]
 plan_rounds = 3          # the Planner revises at most this many times
 plan_papers = 7          # search results shown to the vet in each Planner round
 screen_budget = 1500     # records screened per topic before the Planner asks to narrow
-review_rounds = 4        # search ⇄ review rounds at most
+search_budget = 2.00     # what a new search may spend (USD) unless the vet sets another
 max_terms = 6            # term changes per review round
 max_follow = 8           # records whose references, citing papers or similar articles are followed
 max_queries = 3          # extra Europe PMC queries per review round
@@ -34,6 +37,7 @@ term_max_new = 300       # a new term adding more records than this goes back as
 term_min_kept = 0.10     # a new term stays only if this share of its own records is kept
 round_max_new = 200      # new records screened per review round, at most
 hand_download = 10       # papers without a full text recommended to the vet to download
+results_by_table = true  # read each table once, cell by cell; passed on unseen papers 2026-11-11
 
 # USD per 1M tokens, paid tier, from https://aistudio.google.com/docs/pricing
 # (checked 2026-11-03). Thinking tokens are billed as output. Paid calls are refused after
@@ -44,6 +48,8 @@ valid_until = "2026-12-31"
 
 [prices."gemini-3.8-flash"]
 input = 0.75          # Google raises this to 1.50 on 2027-01-01
+cached = 0.075        # input already in Google's cache; raised to 0.15 the same day
+cache_hour = 0.50     # holding 1M tokens for an hour; raised to 1.00 the same day
 output = 3.75         # and this to 7.50
 
 [prices."gemini-3.5-flash-lite"]

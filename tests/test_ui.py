@@ -19,7 +19,7 @@ from vet.ui import app as ui
 from vet.who import _connect as authors_table
 
 TOPIC = "surgical_pain"          # a topic file that exists in topics/
-HTMX_SHA384 = "HGfztofotfshcF7+8n44JQL2oJmowVChPTg48S+jvZoztPfvwD79OC/LTtG6dMp+"  # 2.0.4, published
+HTMX_SHA384 = "H5SrcfygHmAuTDZphMHqBJLc3FhssKjG7w/CeCpFReSfwBWDTKpkzPP8c+cLsK+V"  # htmx 2.0.10
 SCRIPT = "<script>alert(1)</script><img src=http://example.org/x.png>"
 
 
@@ -272,14 +272,21 @@ def test_pages_load_nothing_from_outside(client, db):
         assert "connect-src 'self'" in csp and "'unsafe" not in csp
         assert r.headers["referrer-policy"] == "no-referrer"
         html = r.text
-        assert re.findall(r"<script[^>]*>", html) == ['<script src="/static/htmx.min.js" defer>']
+        scripts = re.findall(r"<script[^>]*>", html)
+        assert scripts and all(re.fullmatch(r'<script (defer )?src="/(static|_fjkit)/[^"]+"( defer)?>', s)
+                               for s in scripts), (path, scripts)   # files of this app only, none inline
         for tag, attr, url in re.findall(r"<(\w+)[^>]*?\s(src|href|action)=\"(https?:[^\"]*)\"", html):
             assert tag == "a" and attr == "href", (path, tag, url)   # only links you click
-    for t in (Path(ui.__file__).parent / "templates").glob("*.html"):
+        assert not re.findall(r"<[^>]*\son[a-z]+=", html), path   # no inline handler, ours or the kit's
+        for asset in re.findall(r'(?:src|href)="(/_fjkit/[^"]+)"', html):   # the kit's own files
+            body = client.get(asset).text
+            outside = re.findall(r"https?://(?!tailwindcss\.com|www\.w3\.org/2000/svg)", body)
+            assert not outside, asset   # only a licence note and the SVG namespace, never fetched
+    here = Path(ui.__file__).parent
+    for t in (here / "templates").rglob("*.html"):
         text = t.read_text()
         assert not re.search(r"\son\w+=|style=|<style|javascript:", text), t.name
         assert "| safe" not in text and "|safe" not in text, t.name
-    assert "@import" not in (Path(ui.__file__).parent / "static" / "style.css").read_text()
 
 
 def test_links_out_send_no_referrer(client, db):
@@ -288,16 +295,20 @@ def test_links_out_send_no_referrer(client, db):
             assert 'rel="noopener noreferrer"' in a, a
 
 
-def test_htmx_is_the_published_release():
-    js = (Path(ui.__file__).parent / "static" / "htmx.min.js").read_bytes()
+def test_htmx_is_the_published_release(client):
     import base64
+    js = client.get("/_fjkit/vendor/htmx/htmx.min.js").content       # the copy every page loads
     assert base64.b64encode(hashlib.sha384(js).digest()).decode() == HTMX_SHA384
 
 
-def test_htmx_runs_no_code_from_pages(client):
-    head = client.get("/").text
-    assert '"allowEval": false' in head and '"allowScriptTags": false' in head
-    assert '"selfRequestsOnly": true' in head and '"historyCacheSize": 0' in head
+def test_htmx_runs_no_code_from_pages(client, db):
+    for path in pages(db):
+        html = client.get(path).text
+        cfg = json.loads(re.search(r"<meta name=\"htmx-config\" content='([^']+)'>", html).group(1))
+        assert cfg["allowEval"] is False and cfg["allowScriptTags"] is False, path
+        assert cfg["selfRequestsOnly"] is True and cfg["historyCacheSize"] == 0, path
+        assert cfg["includeIndicatorStyles"] is False, path       # htmx would inject a <style>
+        assert "hx-headers='{\"X-CSRF\": \"" in html, path       # every change carries the token
 
 
 def test_no_telemetry_and_no_api_pages(client):
@@ -373,6 +384,7 @@ def test_unknown_names_and_paths_are_not_found(client, path):
     r = client.get(path)
     assert r.status_code == 404, path
     assert "cap_usd" not in r.text and "import" not in r.text
+    assert "Back to the start" in r.text, path                  # this app's page, not the kit's
 
 
 def test_errors_show_no_internals(monkeypatch, db):
@@ -417,7 +429,7 @@ def test_the_chat_rebuilds_an_earlier_run(client):
     assert "Pain relief after spaying in dogs" in html                 # the vet's words
     assert "Which analgesics and doses relieve pain" in html            # the Planner's reading
     assert "your words" in html and "suggestion" in html                # where each item came from
-    assert 'class="opt on">Dogs only' in html                           # the answer given
+    assert 'data-variant="primary">Dogs only<' in html                  # the answer given
     assert "👍" in html and "👎" in html                                 # the papers marked
     assert "Plan agreed after 1 round" in html and "$0.04" in html      # its cost
     assert "Search: 5 records screened, 3 kept, 1 overview, 1 dropped" in html
@@ -427,7 +439,7 @@ def test_the_chat_rebuilds_an_earlier_run(client):
 
 def test_chat_messages_are_kept_in_order_and_shown_as_text(client, db):
     chat.add(db, TOPIC, "vet", "question", {"text": SCRIPT})
-    chat.add(db, TOPIC, "event", "done", {"text": "Search finished"}, cost=0.5)
+    chat.add(db, TOPIC, "event", "stopped", {"text": "Stopped"}, cost=0.5)
     con = sqlite3.connect(db)
     assert [m["n"] for m in chat.messages(con, TOPIC)] == [1, 2]
     html = client.get(f"/topics/{TOPIC}/chat").text
@@ -436,12 +448,10 @@ def test_chat_messages_are_kept_in_order_and_shown_as_text(client, db):
         chat.add(db, TOPIC, "model", "x", {})                          # only known roles
 
 
-def test_the_chat_box_waits_for_the_planner(client):
-    """B1: the box is shown but switched off; nothing can be sent yet."""
+def test_the_chat_box_keeps_an_example_and_says_where_the_words_go(client):
     html = client.get("/?q=Cats+after+spaying").text
-    assert re.search(r"<textarea[^>]*\sdisabled[\s>]", html) and "Cats after spaying" in html
-    assert re.search(r'<button class="send"[^>]*\sdisabled[\s>]', html)
-    assert not [r for r in client.app.routes if getattr(r, "path", "") == "/chat"]
+    assert "Cats after spaying" in html and not re.search(r"<textarea[^>]*\sdisabled[\s>]", html)
+    assert "Your words go to Gemini" in html and "client or patient details" in html
 
 
 def test_studies_show_clinical_ais_essentials(client, db):
@@ -458,12 +468,96 @@ def test_studies_show_clinical_ais_essentials(client, db):
     for part in ("Classification", "Sites", "KOLs", "Inclusion criteria", "Exclusion criteria",
                  "Fictional Veterinary Hospital", "Doe J", "first author", "60 enrolled"):
         assert part in study, part
-    assert '<td class="nowrap">completed</td>' in head          # never broken mid-word
-    assert "<span>Doe J</span><span>Roe R</span>" in head          # KOLs by name
+    assert re.search(r'<td class="[^"]*">completed</td>', head)   # the kit's cells don't wrap
+    assert "<div>Doe J</div><div>Roe R</div>" in head              # KOLs by name
     assert "Doe J · 2020 · Prospective trial" in head              # the year, under the title
-    assert "<dt>Sponsor</dt><dd>Fictional Pharma</dd>" in study
+    assert re.search(r"<dt>Sponsor</dt>\s*<dd>Fictional Pharma</dd>", study)
     inc, exc = views._criteria("Inclusion Criteria:\n* dogs\nExclusion Criteria:\n* cats")
     assert (inc, exc) == ("* dogs", "* cats")
+
+
+# confidence: the list a vet can read from the top
+
+def ranked_db(tmp_path) -> Path:
+    """Six kept records that differ in one thing each, added in the wrong order."""
+    db = make_db(tmp_path)
+    con = sqlite3.connect(db)
+    text = "FIXTURE dogs after surgery, client-owned dogs"
+    rows = [("low", "unclear", "patients", "randomised_trial", "2024", "carprofen"),
+            ("a_old", "yes", "patients", "retrospective", "2001", "carprofen"),
+            ("z_new", "yes", "patients", "retrospective", "2020", "carprofen"),
+            ("trial", "yes", "patients", "randomised_trial", "2010", "carprofen"),
+            ("other", "yes", "patients", "randomised_trial", "2023", "a fictional drug"),
+            ("mid", "related", "patients", "randomised_trial", "2024", "carprofen")]
+    with con:
+        con.execute("DELETE FROM screening")
+        for key, cond, animals, design, year, drug in rows:
+            con.execute("INSERT INTO records (key, title, abstract, year) VALUES (?, ?, ?, ?)",
+                        (key, f"FIXTURE {drug}", text, year))
+            a = answers(cond, animals) | {"design": design}
+            con.execute("INSERT INTO screening (topic, key, decision, rule, flags, summary, design, "
+                        "answers, round, date) VALUES (?, ?, 'keep', '', '', 's', ?, ?, 1, 'd')",
+                        (TOPIC, key, design, json.dumps(a)))
+    con.close()
+    return db
+
+
+def test_the_list_is_ordered_for_a_vet_who_reads_from_the_top(tmp_path, monkeypatch):
+    db = ranked_db(tmp_path)
+    monkeypatch.setitem(views.topic_file(TOPIC).get("screen", {}), "treatments", [])
+    monkeypatch.setattr(views, "topic_file", lambda n: {"screen": {"treatments": [
+        "Analgesia (carprofen, robenacoxib)", "none named"]}})
+    got = views.records(db, TOPIC, "to_review")
+    assert [r["key"] for r in got["rows"]] == ["trial", "z_new", "a_old", "other", "mid", "low"]
+    assert got["levels"] == {"high": 4, "medium": 1, "low": 1}
+    assert got["rows"][0]["names"] == ["carprofen"] and got["rows"][3]["names"] == []
+    assert [r["key"] for r in views.records(db, TOPIC, "to_review", level="medium")["rows"]] == ["mid"]
+    assert views.records(db, TOPIC, "to_review", level="nonsense")["total"] == 6
+
+
+def test_treatment_words_take_a_bracket_apart():
+    got = views.treatment_words({"screen": {"treatments": [
+        "corticosteroids (prednisone, Prednisolone)", "none named", "IV", ""]}})
+    assert got == ["corticosteroids", "prednisolone", "prednisone"]
+
+
+def test_confidence_is_shown_with_its_reason_and_explained(tmp_path):
+    db = ranked_db(tmp_path)
+    c = TestClient(ui.create_app(db, db.parent), base_url="http://127.0.0.1")
+    html = c.get(f"/topics/{TOPIC}/review?view=to_review").text
+    assert re.search(r'<span class="badge" data-variant="success" title="[^"]+">High confidence<', html)
+    assert "<b>high</b>: the abstract shows the condition in patients" in html    # why, readable
+    assert "what does confidence mean?" in html and "not how good the paper is" in html
+    assert re.search(r'<option value="low"[^>]*>Low confidence \(1\)', html)
+    only = c.get(f"/topics/{TOPIC}/review?view=to_review&level=low").text
+    assert "1 record match" in only
+
+
+def test_a_dropped_record_gets_no_confidence(client, db):
+    assert all(not r["confidence"] for r in views.records(db, TOPIC, "dropped")["rows"])
+    assert "conf-high" not in client.get(f"/topics/{TOPIC}/review?view=dropped").text
+
+
+def test_the_most_confident_can_be_approved_in_one_click(tmp_path):
+    db = ranked_db(tmp_path)
+    c = TestClient(ui.create_app(db, db.parent), base_url="http://127.0.0.1")
+    assert "Approve the 4 high-confidence" in c.get(f"/topics/{TOPIC}/review?view=to_review").text
+    post(c, f"/topics/{TOPIC}/decide", {"all": "1", "action": "approve", "level": "high"})
+    left = {r[0] for r in sqlite3.connect(db).execute("SELECT key FROM screening WHERE approved = ''")}
+    assert left == {"mid", "low"}
+    bad = post(c, f"/topics/{TOPIC}/decide", {"all": "1", "action": "approve", "level": "nope"})
+    assert bad.status_code == 400
+
+
+def test_next_goes_to_the_top_of_the_list(tmp_path, monkeypatch):
+    monkeypatch.setattr(views, "PER_PAGE", 2)
+    db = ranked_db(tmp_path)
+    c = TestClient(ui.create_app(db, db.parent), base_url="http://127.0.0.1")
+    html = c.get(f"/topics/{TOPIC}/review?view=to_review&level=high").text
+    nxt = re.search(r'<a class="btn"[^>]* href="([^"]+)"[^>]*hx-swap="([^"]+)"[^>]*>Next', html)
+    assert nxt.group(2) == "outerHTML show:top"                # htmx: scroll to the new list
+    assert nxt.group(1).endswith("#records")                   # without htmx: the same place
+    assert "level=high" in nxt.group(1)                        # the filter stays on
 
 
 # the job runner
@@ -515,12 +609,12 @@ def test_a_job_cut_off_by_a_stop_is_marked_interrupted(tmp_path):
 
 def test_every_count_says_what_it_means(client):
     html = client.get(f"/topics/{TOPIC}/review").text
-    for word, meaning in (("found", "articles the search turned up"),
-                          ("kept by screening", "on topic, judged from the abstract"),
-                          ("approved by you", "in your review; 3 still to review"),
-                          ("full text", "approved articles downloaded"),
-                          ("in the database", "studies read in, every value cited")):
-        assert f"<span>{word}</span><small>{meaning}</small>" in html, word
+    for word, meaning in (("Found", "articles the search turned up"),
+                          ("Kept by screening", "on topic, judged from the abstract"),
+                          ("Approved by you", "in your review; 3 still to review"),
+                          ("Full text", "approved articles downloaded"),
+                          ("In the database", "studies read in, every value cited")):
+        assert re.search(rf">{word}</p>\s*<p[^>]*>[^<]*</p>\s*<p[^>]*>{meaning}</p>", html), word
     assert "What do these numbers mean?" in html
     assert ">results<" not in html                       # a count of numbers means nothing
     assert ">reviews<" not in html and "Review · lead" not in html    # review is your step only
@@ -546,7 +640,7 @@ def test_the_vets_words_and_the_expanded_search_are_kept(client, db, tmp_path, m
     assert "Which analgesics and doses relieve pain" in html             # as agreed
     assert "Pain, Postoperative" in html and "this found <b>61</b> records" in html  # expanded, run
     assert "Understood as" in html and "it is not what PubMed was sent" in html
-    assert '<p class="and">AND</p>' in html                     # the blocks, as one search
+    assert ">AND</p>" in html                                   # the blocks, as one search
     assert "[Mesh]) AND (pain[tiab])" in html                            # the exact query
 
 
@@ -558,7 +652,7 @@ def test_older_topic_files_show_their_terms():
 
 def test_each_record_says_how_it_was_found(client):
     html = client.get(f"/topics/{TOPIC}/review").text
-    assert "Found by</span> the PubMed search" in html
+    assert "Found by the PubMed search" in html
     assert views.found_by("references:123") == "the references of PMID 123"
     assert views.found_by("term:PRCA") == 'the term "PRCA", added in a review round'
 

@@ -119,6 +119,53 @@ entry or at diagnosis are baseline), or none for a table that reports no results
 example a drug protocol). Leave out the fields you
 leave empty."""
 TABLE_REF = re.compile(r"\btable\s+(\d+)\b", re.IGNORECASE)
+# results by table (pipeline.results_by_table): the model lists the tables, each is then read
+# once, every cell, and code counts the cells and asks once for any that are missing
+CELLS_PER_CALL = 60      # up to 320 tokens a row: an answer stays well under the output limit
+REPAIR_BATCH = 40        # values per repair call: the API refuses a schema with too many fields
+TABLES_PLAN = """## This call: the document's tables
+List every table in the document. Give no results yet. For each table:
+- number: as printed (1, 2, A1);
+- reports_results: false only for a table holding no results, such as a drug protocol, an
+  antibody list or a list of references;
+- rows: every printed row that holds values, in order. When labels repeat, join the subheading:
+  "Subheading › Row". Each row must be named once;
+- columns: every column that holds values, not the columns of row labels. Give the heading in
+  full, with its group: "Treated › Day 7". Each column must be named once."""
+TABLE_PART = """## This call: Table {n}, these rows
+Give every value in these rows, one result row for each value cell. Don't choose among them:
+the database needs every cell, whether or not the text discusses it.
+
+Rows:
+{rows}
+
+Columns:
+{columns}
+
+- Name each cell's group: arm_id when the column is a study arm, subgroup otherwise. A result
+  with neither reads as the whole study, so only a whole-study column leaves both empty.
+- A column that only qualifies another value (its confidence limit, spread or P value) goes in
+  that value's fields, in the same result row.
+- as_written: the printed row, then " … ", then the printed column heading, so the value and
+  its timepoint are both in it. A heading printed on two lines is two passages: "CON … Day 1".
+- table_row: the row as listed above. table_columns: every column listed above that the
+  result's numbers come from.
+- A cell with nothing printed gives no result: list it in blank_cells as "row | column".
+Leave out the fields you leave empty."""
+TABLE_MORE = """## This call: Table {n}, the cells still missing
+Give each of these cells, one result row each. Name its group. as_written: the printed row,
+then " … ", then the printed column heading, with each heading line as its own passage. Give
+table_row and table_columns. If nothing is printed in a cell, list it in blank_cells as
+"row | column".
+
+Cells:
+{cells}
+
+Leave out the fields you leave empty."""
+PROSE_FORM = """## This call: results in the running text
+The tables have been read already. Give every result the running text reports that no table
+holds: the animals' condition at entry (baseline), outcomes, and adverse events. Leave out numbers
+that are printed in a table. Leave out the fields you leave empty."""
 REPAIR = """## Form: corrections
 Code checked your answer against the document and the codebook, and the values below failed.
 Give each one again, corrected, with the evidence its field needs, or leave it empty if the
@@ -156,6 +203,7 @@ class ExtractReport:
     values: int = 0        # values stored
     repaired: int = 0      # values the repair round fixed
     emptied: int = 0       # values given but not stored (each one in extraction_log)
+    partly: int = 0        # tables with cells still missing after the one retry
     calls: int = 0
     usd: float = 0.0
 
@@ -276,6 +324,10 @@ def _row_schema(cb: Codebook, table: str, topic_name: str, keys: dict) -> dict:
     return _object(props, list(RESULT_REQUIRED) if table == "results" else None)
 
 
+TEXTS = {"type": "array", "items": {"type": "string"}}
+PLAN_SCHEMA = _object({"tables": {"type": "array", "items": _object({
+    "number": {"type": "string"}, "reports_results": {"type": "boolean"},
+    "rows": TEXTS, "columns": TEXTS})}})
 GATE = _object({"answer": {"type": "string", "enum": ["yes", "no", "unclear"]},
                 "quote": {"type": "string"}})
 
@@ -290,6 +342,16 @@ def schema(step: str, cb: Codebook, topic_name: str, keys: dict | None = None) -
         row = _row_schema(cb, table, topic_name, keys or {})
         props[table] = row if table in ONE_ROW else {"type": "array", "items": row}
     return _object(props)
+
+
+def _label(text) -> str:
+    return " ".join(str(text).lower().split())
+
+
+def _missing(rows: list, columns: list, seen: list) -> list[tuple]:
+    """The table's cells no answer has covered, as a stored value or as a blank."""
+    done = {(_label(r), _label(c)) for r, c in seen}
+    return [(r, c) for r in rows for c in columns if (_label(r), _label(c)) not in done]
 
 
 # -- one document -------------------------------------------------------------------------
@@ -324,12 +386,24 @@ class _Doc:
         self.log: list[dict] = []
         self.step = "study"
         self.report = ExtractReport(source_id)
+        self.by_table = llm.cfg["pipeline"].get("results_by_table", False)
+        self.cache = ""            # the document held at Google, so it is sent only once
 
     def run(self):
+        if self.by_table:
+            self.cache = self.llm.open_cache("structure", self.system, self._document(),
+                                             self.source_id)
+        try:
+            self._steps()
+        finally:
+            if self.cache:
+                self.llm.close_cache(self.cache, "structure", self.source_id)
+
+    def _steps(self):
         for step in STEPS:
             self.step = step
             if step == "results":
-                new = self._results()
+                new = self._results_by_table() if self.by_table else self._results()
             else:
                 answer = self._ask(form(step, self.cb, self.topic_name, self.topic),
                                    schema(step, self.cb, self.topic_name, self._key_lists()))
@@ -364,6 +438,58 @@ class _Doc:
             new += self._add(self._list("results", answer.get("results")))
         return new
 
+    def _results_by_table(self) -> list[Row]:
+        """Every table once, cell by cell, then the running text, so no table is asked twice
+        unless its count falls short. Big tables go in parts: an answer past the output limit
+        breaks, and a whole paper must not be lost to one table."""
+        body, new = form("results", self.cb, self.topic_name, self.topic), []
+        for table in self._ask(TABLES_PLAN, PLAN_SCHEMA).get("tables") or []:
+            rows, columns = table.get("rows") or [], table.get("columns") or []
+            if table.get("reports_results") is not False and rows and columns:
+                new += self._read_table(str(table.get("number") or "?"), rows, columns, body)
+        answer = self._ask(body + "\n\n" + PROSE_FORM, self._results_schema(list(RESULT_PARTS)))
+        return new + self._add(self._list("results", answer.get("results")))
+
+    def _read_table(self, n: str, rows: list, columns: list, body: str) -> list[Row]:
+        new, seen, step = [], [], max(1, CELLS_PER_CALL // len(columns))
+        for start in range(0, len(rows), step):
+            part = rows[start:start + step]
+            new += self._table_call(n, body, seen, TABLE_PART.format(
+                n=n, rows="\n".join(f"- {r}" for r in part),
+                columns="\n".join(f"- {c}" for c in columns)))
+        missing = _missing(rows, columns, seen)
+        for start in range(0, len(missing), CELLS_PER_CALL):
+            cells = "\n".join(f"- {r} | {c}" for r, c in missing[start:start + CELLS_PER_CALL])
+            new += self._table_call(n, body, seen, TABLE_MORE.format(n=n, cells=cells))
+        left = _missing(rows, columns, seen)
+        if left:
+            self.report.partly += 1
+            self._note("results", f"Table {n}", "", "",
+                       f"partly stored: {len(left)} of {len(rows) * len(columns)} cells missing")
+        return new
+
+    def _table_call(self, n: str, body: str, seen: list, ask: str) -> list[Row]:
+        """One part of a table. Cells it covers go into seen; if it fails, only this part is
+        lost, and the count asks for it again."""
+        try:
+            answer = self._ask(body + "\n\n" + ask, self._table_schema())
+        except ExtractionFailed as e:
+            self._note("results", f"Table {n}", "", "", f"part of the table not read: {e}")
+            return []
+        got = [r for r in answer.get("results") or [] if isinstance(r, dict)]
+        seen += [(r.get("table_row"), c) for r in got for c in r.get("table_columns") or []]
+        seen += [tuple(b.split("|", 1)) for b in answer.get("blank_cells") or [] if "|" in str(b)]
+        return self._add(self._list("results", got))
+
+    def _table_schema(self) -> dict:
+        s = self._results_schema(list(RESULT_PARTS))
+        item = s["properties"]["results"]["items"]
+        item["properties"] |= {"table_row": {"type": "string"}, "table_columns": TEXTS}
+        item["required"] = [*item["required"], "table_row", "table_columns"]
+        s["properties"]["blank_cells"] = TEXTS
+        s["required"] = [*s["required"], "blank_cells"]
+        return s
+
     def _add(self, rows: list[Row]) -> list[Row]:
         self.rows += rows
         return rows
@@ -374,13 +500,16 @@ class _Doc:
         return s
 
     # -- the model ------------------------------------------------------------------------
+    def _document(self) -> str:
+        return f'<document source_id="{self.source_id}">\n{self.text}\n</document>\n\n'
+
     def _ask(self, body: str, answer_schema: dict) -> dict:
-        prompt = (f'<document source_id="{self.source_id}">\n{self.text}\n</document>\n\n'
-                  f"## Keys assigned so far\n{self._keys_text()}\n\n{body}")
+        prompt = ("" if self.cache else self._document()) + (
+            f"## Keys assigned so far\n{self._keys_text()}\n\n{body}")
         self.report.calls += 1
         try:
             answer = self.llm.call("structure", prompt, answer_schema, system=self.system,
-                                   doc=self.source_id)
+                                   doc=self.source_id, cache=self.cache)
         except json.JSONDecodeError as e:
             raise ExtractionFailed(f"the model's answer is not JSON (cut off?): {e}") from e
         return answer if isinstance(answer, dict) else {}
@@ -561,7 +690,7 @@ class _Doc:
     def _repair(self, mine: dict):
         """One call for the step: each failing value with its problems; the answers replace
         those values."""
-        refs, items, props, keys = {}, [], {}, self._key_lists()
+        refs, items, props, keys = {}, {}, {}, self._key_lists()
         for (row, name), problems in mine.items():
             f, c = self._field(row, name), row.cells[name]
             ref = f"{row.ref}.{f.name}"
@@ -572,16 +701,20 @@ class _Doc:
             rest = "" if row.table in ONE_ROW else "; ".join(
                 f"{n} {json.dumps(o.value, ensure_ascii=False)}" for n, o in row.cells.items()
                 if o.value and n != name)
-            items.append(f"\n{ref}\n" + (f"- the row: {rest}\n" if rest else "")
-                         + f"- you gave: {gave}\n- problem: {'; '.join(problems)}\n"
-                         + _line(self.cb, row.table, f, self.topic_name))
+            items[ref] = (f"\n{ref}\n" + (f"- the row: {rest}\n" if rest else "")
+                          + f"- you gave: {gave}\n- problem: {'; '.join(problems)}\n"
+                          + _line(self.cb, row.table, f, self.topic_name))
             props[ref] = _value(self.cb, row.table, f, keys)
         gave = {k: k[0].cells[k[1]] for k in mine}
-        answer = self._ask(REPAIR + "\n".join(items), _object(props))
-        for ref, raw in answer.items():
-            if ref in refs:
-                row, name = refs[ref]
-                row.cells[name] = _cell(raw, self._field(row, name), self.cb)
+        names = list(refs)
+        for start in range(0, len(names), REPAIR_BATCH):
+            part = names[start:start + REPAIR_BATCH]
+            answer = self._ask(REPAIR + "\n".join(items[r] for r in part),
+                               _object({r: props[r] for r in part}))
+            for ref, raw in answer.items():
+                if ref in refs:
+                    row, name = refs[ref]
+                    row.cells[name] = _cell(raw, self._field(row, name), self.cb)
         after = self._check()
         for (row, name), problems in mine.items():
             if (row, name) in after:

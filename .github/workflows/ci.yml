@@ -21,7 +21,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.12", "3.13"]
+        python: ["3.13"]
     steps:
       # actions pinned to exact commits (version in the comment): a re-tagged release
       # can't change what runs here

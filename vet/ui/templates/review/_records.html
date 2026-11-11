@@ -1,0 +1,24 @@
+{#- The list itself; also the fragment htmx swaps when a filter or page changes. -#}
+{% from "ui/layout.html" import stack, row %}
+{% from "ui/data.html" import caption, empty_state %}
+{% from "ui/button.html" import button %}
+<section id="records" aria-live="polite">
+{% call stack(gap=3) %}
+  {{ caption((data.total | thousands) ~ " record" ~ ("" if data.total == 1 else "s") ~ (" match" if q or flag or design or level else "") ~ ((" · page " ~ data.page ~ " of " ~ data.pages) if data.pages > 1 else "") ~ ((" · surest first" ~ ((", then " ~ (data.named | thousands) ~ " naming a treatment from your question") if data.named else "")) if data.levels.high or data.levels.medium or data.levels.low else "")) }}
+  {% if not data.rows %}
+    {{ empty_state("Nothing here" ~ (" for these filters" if q or flag or design or level else ""), icon_name="inbox") }}
+  {% endif %}
+  {% for r in data.rows %}
+    {% include "review/_record.html" %}
+  {% endfor %}
+  {% if data.pages > 1 %}
+  <nav aria-label="Pages">
+  {% call row(gap=2, justify="between") %}
+    {% set base = "/topics/" ~ name ~ "/review?view=" ~ data.view ~ "&q=" ~ (q | urlencode) ~ "&flag=" ~ flag ~ "&design=" ~ design ~ "&level=" ~ level %}
+    {% if data.page > 1 %}{{ button("← Previous", href=base ~ "&page_no=" ~ (data.page - 1) ~ "#records", variant="outline", hx_get=base ~ "&page_no=" ~ (data.page - 1), hx_target="#records", hx_swap="outerHTML show:top", hx_push_url="true") }}{% else %}<span></span>{% endif %}
+    {% if data.page < data.pages %}{{ button("Next →", href=base ~ "&page_no=" ~ (data.page + 1) ~ "#records", variant="outline", hx_get=base ~ "&page_no=" ~ (data.page + 1), hx_target="#records", hx_swap="outerHTML show:top", hx_push_url="true") }}{% endif %}
+  {% endcall %}
+  </nav>
+  {% endif %}
+{% endcall %}
+</section>

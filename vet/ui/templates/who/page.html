@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% from "ui/layout.html" import stack, page_header %}
+{% from "ui/data.html" import caption %}
+{% block title %}Who & where{% endblock %}
+{% block content %}
+{{ page_header("Who & where", "all searches") }}
+{% call stack(gap=4) %}
+  {{ caption("Institutions that led the approved papers (a first or last author there), from OpenAlex author records. Middle authors are left out: they often help with one part.", tone=none) }}
+  {% set topic = "" %}{% include "who/_table.html" %}
+{% endcall %}
+{% endblock %}

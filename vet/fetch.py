@@ -19,12 +19,12 @@ the fetches table in the database beside docs/ (vetriever.db). After each run th
 written out to docs/index.csv, and the papers no route got to reports/to_download.csv with a
 link, to download by hand. A re-run skips the papers the table has a file for; an older
 docs/index.csv is loaded into the table once, when the table is still empty. `fetched` tells
-other steps which papers have a full text.
+other steps which papers have a full text. PDFs are read by pdftext, which repairs their
+symbols; `reread` reads the stored ones again when it improves.
 """
 import csv
-import io
-import logging
 import re
+import shutil
 import sqlite3
 import unicodedata
 import xml.etree.ElementTree as ET
@@ -35,10 +35,10 @@ from pathlib import Path
 from urllib.parse import quote
 
 import httpx
-from pypdf import PdfReader
 from pypdf.errors import PyPdfError
 
 from . import connectors as c
+from . import pdftext
 from .settings import DB, env
 from .store import document_key, norm_doi
 
@@ -52,18 +52,9 @@ API_HOST = {"elsevier": "api.elsevier.com", "wiley": "api.wiley.com"}
 # publishers whose web sites code must not use: their text-mining API is the way in
 API_ONLY = ("wiley.com", "sciencedirect.com", "elsevier.com")
 MIN_PAGES, MIN_WORDS, MIN_TITLE = 2, 500, 0.8
-# symbol codes older PDFs give as text (e.g. JVIM 2000), checked against the page images;
-# "=" from its place in statistics ("P /H11005 .017")
-PI_CODES = {"/H11005": "=", "/H11021": "<", "/H11022": ">", "/H11034": "°", "/H9262": "µ",
-            "/H17015": "©"}
-# fonts whose symbols come out as ordinary letters ("o" for "<", "4" for ">"): the text can't
-# be trusted for <, >, = and the like, so the paper is flagged for a person to check
-SYMBOL_FONT = re.compile(r"AdvP4C4E|AdvPi\d|AdvPSMP|AdvPSMSAM|MathematicalPi|Symbol")
 COLUMNS = ["source_id", "pmid", "doi", "pmcid", "title", "route", "access", "file_name",
            "text_file", "pages", "words", "title_match", "text_warning", "url",
            "retrieved_date", "tried"]
-
-logging.getLogger("pypdf").setLevel(logging.ERROR)     # font warnings on older PDFs
 
 
 class NoText(Exception):
@@ -135,6 +126,42 @@ def fetched(ids: list[str], db: Path) -> dict[str, Paper]:
         return out
     finally:
         con.close()
+
+
+def reread(folder: Path, db: Path | None = None, say: Callable[[str], None] = print) -> dict:
+    """Read every stored PDF and XML file again, after a reader improves: free, nothing leaves
+    this computer. A text that changes is rewritten, and the first version of it stays in
+    <folder>/text_before/ so the change can be compared or undone. Returns what happened."""
+    con = _connect(db or folder / DB.name, folder)
+    done = {"read": 0, "changed": 0, "flagged": 0, "skipped": 0}
+    try:
+        for p in _select(con, "WHERE file_name LIKE '%.pdf' OR file_name LIKE '%.xml'"):
+            pdf, path = folder / p.file_name, folder / p.text_file
+            ext = "xml" if p.file_name.endswith(".xml") else "pdf"
+            try:
+                data = pdf.read_bytes()
+                text, _, words = _read(ext, data)
+            except (OSError, NoText) as e:
+                done["skipped"] += 1
+                say(f"  skipped {p.source_id}: {e}")
+                continue
+            done["read"] += 1
+            if not path.exists() or path.read_text("utf-8") != text:
+                done["changed"] += 1
+                before = folder / "text_before" / path.name
+                if path.exists() and not before.exists():
+                    before.parent.mkdir(exist_ok=True)
+                    shutil.copyfile(path, before)
+                path.write_text(text, "utf-8")
+            p.words = str(words)
+            p.text_warning = pdftext.warning(data, text) if ext == "pdf" else p.text_warning
+            done["flagged"] += bool(p.text_warning)
+            with con:
+                _insert(con, [p])
+        _export(con, folder)
+    finally:
+        con.close()
+    return done
 
 
 def paper_id(raw: str) -> tuple[str, str]:
@@ -224,7 +251,7 @@ def _fetch_one(http: c.Http, p: Paper, folder: Path):
         p.access = "open_access" if free or name in ("pmc", "free_copy") else "paywalled"
         p.file_name, p.text_file = f"docs/{p.source_id}.{ext}", f"docs/{p.source_id}.txt"
         p.pages, p.words, p.title_match = str(pages or ""), str(words), f"{match:.2f}"
-        p.text_warning = _symbol_warning(data, text) if ext == "pdf" else ""
+        p.text_warning = pdftext.warning(data, text) if ext == "pdf" else ""
         p.retrieved_date = date.today().isoformat()
         break
     if not routes:
@@ -315,13 +342,10 @@ def _read(ext: str, data: bytes) -> tuple[str, int, int]:
     """(text, pages, words of main text); pages is 0 for XML."""
     if ext == "pdf":
         try:
-            pdf = PdfReader(io.BytesIO(data))
-            text = "\n\n".join(page.extract_text() or "" for page in pdf.pages)
+            text, pages = pdftext.read(data)
         except PyPdfError as e:
             raise NoText(f"unreadable PDF ({e})") from None
-        for code, symbol in PI_CODES.items():
-            text = text.replace(code, symbol)
-        return _clean(text), len(pdf.pages), len(text.split())
+        return _clean(text), pages, len(text.split())
     try:
         root = ET.fromstring(data)
     except ET.ParseError:
@@ -333,27 +357,11 @@ def _read(ext: str, data: bytes) -> tuple[str, int, int]:
     return _clean("".join(out)), 0, len(" ".join(body.itertext()).split()) if body is not None else 0
 
 
-def _symbol_warning(data: bytes, text: str) -> str:
-    """Why <, >, = and the like may be wrong in a PDF's text; empty when they can be trusted."""
-    fonts = set()
-    try:
-        for page in PdfReader(io.BytesIO(data)).pages:
-            for ref in ((page.get("/Resources") or {}).get("/Font") or {}).values():
-                font = ref.get_object()
-                name = re.sub(r"^/?[A-Z]{6}\+", "", str(font.get("/BaseFont", "")))
-                if SYMBOL_FONT.search(name) and "/ToUnicode" not in font:
-                    fonts.add(name)
-    except (PyPdfError, AttributeError):
-        fonts.add("(fonts unreadable)")
-    codes = sorted(set(re.findall(r"/H\d{4,5}", text)))
-    why = ([f"symbol fonts {', '.join(sorted(fonts))}"] if fonts else []) + \
-          ([f"unknown symbol codes {', '.join(codes[:5])}"] if codes else [])
-    return "symbols such as <, >, = may be wrong in the text: " + "; ".join(why) if why else ""
-
-
 BLOCK = {"p", "para", "simple-para", "title", "section-title", "article-title", "caption",
          "label", "list-item", "fn", "abstract", "tr", "row", "table-wrap", "table", "sec"}
 CELL = {"td", "th", "entry"}
+BREAK = {"break", "br"}      # a line break: two values that must never run together
+CELL_SEP = "\x1f"           # a break or a paragraph inside a cell, until the cell is joined
 HEADING = {"title", "section-title", "article-title"}
 # inline items the XML gives with no space between them (names, keywords)
 SPACED = {"surname", "given-names", "given-name", "kwd", "keyword", "contrib", "author", "aff"}
@@ -364,15 +372,28 @@ def _local(el) -> str:
     return el.tag.rsplit("}", 1)[-1] if isinstance(el.tag, str) else ""
 
 
-def _walk(el, out: list):
-    """XML → text: headings as '## ', one paragraph per line, table cells joined by ' | '."""
+def _walk(el, out: list, in_cell: bool = False):
+    """XML → text: headings as '## ', one paragraph per line, table cells joined by ' | '.
+
+    Inside a cell, a line break or a second paragraph becomes ' / ': "3<break/>8" is two values,
+    never "38", and the row stays on one line. Elsewhere a line break starts a new line."""
     name = _local(el)
     if name not in SKIP:
-        out.append(("\n## " if name in HEADING else "") + (el.text or ""))
-        for kid in el:
-            _walk(kid, out)
-        out.append("\n" if name in BLOCK else " | " if name in CELL else
-                   " " if name in SPACED else "")
+        if name in CELL and not in_cell:
+            inner = [el.text or ""]
+            for kid in el:
+                _walk(kid, inner, True)
+            parts = (" ".join(x.split()) for x in "".join(inner).split(CELL_SEP))
+            out.append(" / ".join(x for x in parts if x) + " | ")
+        else:
+            out.append(("\n## " if name in HEADING and not in_cell else "") + (el.text or ""))
+            for kid in el:
+                _walk(kid, out, in_cell)
+            if in_cell:
+                out.append(CELL_SEP if name in BLOCK | BREAK | CELL else
+                           " " if name in SPACED else "")
+            else:
+                out.append("\n" if name in BLOCK | BREAK else " " if name in SPACED else "")
     out.append(el.tail or "")
 
 

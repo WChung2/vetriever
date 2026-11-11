@@ -1,0 +1,11 @@
+{% from "ui/table.html" import table, cell %}
+{% from "ui/data.html" import caption %}
+{% call table([{"label": "#"}, {"label": "Institution"}, {"label": "Countries"}, {"label": "Papers led"}, {"label": "Lead authors"}],
+              rows=rows, empty_title="No author records" ~ (" for this search" if topic else "") ~ " yet",
+              empty_description="vet who fetches them, free.", empty_icon="building-2") %}
+  {% for r in rows %}
+  <tr>{{ cell(loop.index, numeric=true, tone="muted") }}{{ cell(r.root_name) }}{{ cell(r.countries | replace("|", ", ")) }}
+    {% call cell(numeric=true) %}<b>{{ r.papers }}</b>{% endcall %}
+    {% call cell() %}{{ r.names[:3] | join(", ") }}{% if r.names | length > 3 %} {{ caption("+ " ~ (r.names | length - 3) ~ " more") }}{% endif %}{% endcall %}</tr>
+  {% endfor %}
+{% endcall %}

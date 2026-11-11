@@ -1,0 +1,51 @@
+{#- The Planner's last round, waiting for the vet: answer, mark the papers, then revise or agree. -#}
+{% from "ui/layout.html" import stack, row %}
+{% from "ui/data.html" import card, caption, item, item_list %}
+{% from "ui/disclosure.html" import collapsible %}
+{% from "ui/button.html" import button %}
+{% from "ui/form.html" import radio_group, textarea_field %}
+{% from "ui/feedback.html" import alert %}
+<form method="post" action="/topics/{{ name }}/plan">
+  <input type="hidden" name="csrf" value="{{ token }}">
+  <input type="hidden" name="request" value="{{ request_id }}">
+  <input type="hidden" name="round" value="{{ m.n }}">
+  {% call stack(gap=4) %}
+  {% if m.questions %}
+    {% call card(title="Questions") %}
+      {% call stack(gap=4) %}
+      {% for q in m.questions %}
+        {% set opts = [] %}{% for o in q.options %}{% set _ = opts.append((o, o)) %}{% endfor %}
+        {{ radio_group("q" ~ loop.index0, q.question, options=opts) }}
+      {% endfor %}
+      {% endcall %}
+    {% endcall %}
+  {% endif %}
+  {% if m.papers %}
+    {% call card(title=(m.papers | length) ~ " papers this search finds: on topic?") %}
+      {% call stack(gap=4) %}
+      {% for r in m.papers %}
+        {% call stack(gap=1) %}
+          <p><strong>{{ r.title }}</strong></p>
+          {{ caption("PMID " ~ r.key) }}
+          {% if r.abstract %}{% call collapsible("Abstract") %}<p>{{ r.abstract }}</p>{% endcall %}{% endif %}
+          {{ radio_group("p" ~ r.key, "Is this paper on topic?", options=[("yes", "👍 Yes"), ("no", "👎 No")]) }}
+        {% endcall %}
+      {% endfor %}
+      {% endcall %}
+    {% endcall %}
+  {% endif %}
+  {% call card(title="Anything else?") %}
+    {% call stack(gap=3) %}
+      {{ textarea_field("note", "Something to change or add", rows=2, maxlength="2000", placeholder="For example: include cats, leave out reviews before 2000") }}
+      {{ textarea_field("known", "Papers you already know (PMIDs, DOIs or titles, one per line)", rows=2) }}
+      {{ caption("What you type here goes to Gemini too. Don't type client or patient details.") }}
+    {% endcall %}
+  {% endcall %}
+  {% if p.busy %}{{ alert("A step is running on another search: wait for it to finish.") }}{% endif %}
+  {% call row(gap=2) %}
+    {{ button("Agree this search", type="submit", name="go", value="agree", disabled=p.busy) }}
+    {% if not p.last_round %}{{ button("Revise with my answers", type="submit", variant="outline", name="go", value="revise", disabled=p.busy) }}{% endif %}
+  {% endcall %}
+  {{ caption(("This was the Planner's last round. " if p.last_round else "Revise: the Planner redraws the search from your answers, about $0.05. ") ~ "Agree: free; next you set a budget.") }}
+  {% endcall %}
+</form>

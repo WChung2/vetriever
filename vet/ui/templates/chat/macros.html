@@ -1,0 +1,13 @@
+{#- Pieces of the step panel: the hidden fields, the budget field and the money line. -#}
+{% from "ui/data.html" import caption %}
+{% from "ui/form.html" import text_field %}
+{% macro hidden(token, request_id) %}
+<input type="hidden" name="csrf" value="{{ token }}">
+<input type="hidden" name="request" value="{{ request_id }}">
+{% endmacro %}
+{% macro budget_field(p, label="Budget for this search (US$)") %}
+{{ text_field("budget", label, value='%.2f' | format(p.suggest), type="number", required=true, min="0.01", step="0.01") }}
+{% endmacro %}
+{% macro money_line(p) %}
+{{ caption(("Spent " ~ (p.spent | usd) ~ " of this search's " ~ (p.budget | usd) ~ " budget, " ~ (p.left | usd) ~ " left. " if p.budget else "") ~ "This step needs " ~ (p.needs | usd) ~ " of budget left: it can cost " ~ (p.cost | usd) ~ ", and code keeps a margin so the budget is never passed. " ~ (p.cap_left | usd) ~ " is left under the spending cap.") }}
+{% endmacro %}

@@ -6,7 +6,7 @@ import pytest
 
 from vet.codebook import Codebook
 from vet.llm import LLM, FakeGemini
-from vet.screen import SCHEMA, decide, screen, system_prompt
+from vet.screen import SCHEMA, confidence, decide, screen, system_prompt
 from vet.settings import ROOT
 
 CB = Codebook()
@@ -127,3 +127,36 @@ def test_a_cut_off_answer_is_asked_again_then_kept_unanswered(tmp_path):
         ("1", "off_topic", []), ("2", "off_topic", []),         # asked again, then answered
         ("3", "keep", ["not_answered"]), ("4", "keep", ["not_answered"])]
     assert len(fake.calls) == 4
+
+
+# confidence: from what the record shows
+
+ON_TOPIC = "Dogs with immune-mediated hemolytic anemia were treated. Client-owned dogs were enrolled."
+
+
+def said(cond="yes", animals="patients", cq="immune-mediated hemolytic anemia", aq="Client-owned dogs"):
+    return {"condition": {"answer": cond, "quote": cq}, "animals": {"answer": animals, "quote": aq}}
+
+
+@pytest.mark.parametrize("answers, flags, level", [
+    (said(), [], "high"),
+    (said(cond="related"), ["related_condition"], "medium"),
+    (said(), ["title_only"], "medium"),
+    (said(animals="survey"), ["survey"], "medium"),
+    (said(cond="no", animals="healthy_treated"), ["research_animals"], "medium"),
+    (said(cq="a sentence the record does not hold"), [], "medium"),
+    (said(aq=""), [], "medium"),
+    (said(cond="unclear"), [], "low"),
+    (said(animals="unclear"), [], "low"),
+    (said(cond="no"), ["unbacked_drop"], "low"),
+    ({}, ["not_answered"], "low"),
+    ({}, [], "low"),
+])
+def test_confidence_comes_from_what_the_record_shows(answers, flags, level):
+    got, why = confidence(answers, flags, ON_TOPIC)
+    assert got == level and why
+
+
+@pytest.mark.parametrize("flag", ["unbacked_drop", "not_answered"])
+def test_a_vet_is_told_when_the_screening_could_not_back_itself_up(flag):
+    assert confidence(said(), [flag], ON_TOPIC) == ("low", "the screening could not back up its answer")

@@ -1,7 +1,6 @@
 """Full-text routes against fake services (offline, free). scripts/smoke.sh tries the real ones."""
 import csv
 import json
-import shutil
 import sqlite3
 
 import httpx
@@ -135,6 +134,47 @@ def test_pubmed_central_first_and_text_keeps_headings_and_tables(tmp_path):
     assert not any("wiley" in u for u in s.asked)          # stopped at the first good route
 
 
+def xml_text(body: str) -> str:
+    return f._read("xml", f"<article><body>{body}</body></article>".encode())[0]
+
+
+def test_a_line_break_in_a_cell_keeps_two_values_apart():
+    text = xml_text("<table><tr><td>Platelets</td><td>3<break/>8</td><td>12</td></tr></table>")
+    assert "Platelets | 3 / 8 | 12 |" in text and "38" not in text
+
+
+def test_two_paragraphs_in_a_cell_stay_on_the_row():
+    text = xml_text("<table><tr><td>Dose</td><td><p>2 mg/kg</p><p>q12h</p></td></tr>"
+                    "<tr><td>Days</td><td>14</td></tr></table>")
+    assert "Dose | 2 mg/kg / q12h |" in text and "Days | 14 |" in text
+
+
+def test_a_cell_with_nothing_after_its_break_gets_no_stray_slash():
+    text = xml_text("<table><tr><td>a<break/></td><td><p>b</p></td></tr></table>")
+    assert "a | b |" in text and "/" not in text
+
+
+def test_a_line_break_in_prose_starts_a_new_line():
+    text = xml_text("<p>Bern<break/>Switzerland</p>")
+    assert "Bern\nSwitzerland" in text
+
+
+def test_an_elsevier_line_break_counts_too():
+    text = xml_text("<table><row><entry>n</entry><entry>12<br/>15</entry></row></table>")
+    assert "n | 12 / 15 |" in text
+
+
+def test_reread_updates_an_xml_text_and_keeps_the_old_one(tmp_path):
+    p = run(pmc_services(), tmp_path)
+    xml = (tmp_path / p.file_name).read_text().replace("<td>2 mg/kg</td>", "<td>2<break/>4 mg/kg</td>")
+    (tmp_path / p.file_name).write_text(xml)
+    done = f.reread(tmp_path, say=lambda s: None)
+    assert done["changed"] == 1 and "Prednisone | 2 / 4 mg/kg |" in (tmp_path / p.text_file).read_text()
+    before = tmp_path / "text_before" / (tmp_path / p.text_file).name
+    assert "Prednisone | 2 mg/kg |" in before.read_text()
+    assert f.reread(tmp_path, say=lambda s: None)["changed"] == 0      # a second run: nothing new
+
+
 def test_one_page_preview_is_refused_and_listed_to_download(tmp_path):
     s = Services(links=[("text/xml", "https://api.elsevier.com/content/article/PII:S1")],
                  answers={"https://api.elsevier.com/": lambda req: httpx.Response(
@@ -222,16 +262,11 @@ def test_a_retry_replaces_the_earlier_line_even_under_a_new_key(tmp_path):
     assert len(to_download(tmp_path)) == 1
 
 
-def test_pdf_symbol_codes_become_symbols_and_symbol_fonts_are_flagged(tmp_path):
-    pdf = make_pdf([TITLE + " relapse (PCV /H11021 25%) " + WORDS[:1800], WORDS[1800:]])
+def test_a_pdf_in_a_symbol_font_nobody_checked_is_flagged(tmp_path):
     s = Services(links=[("unspecified", "https://api.wiley.com/onlinelibrary/tdm/v1/articles/x")],
-                 answers={"https://api.wiley.com/": httpx.Response(200, content=pdf)})
-    p = run(s, tmp_path)
-    assert "PCV < 25%" in (tmp_path / p.text_file).read_text("utf-8") and p.text_warning == ""
-    shutil.rmtree(tmp_path)
-    s.answers = {"https://api.wiley.com/": httpx.Response(200, content=make_pdf(
-        [TITLE + " " + WORDS[:1800], WORDS[1800:]], font="AdvP4C4E74"))}
-    assert "AdvP4C4E74" in run(s, tmp_path).text_warning
+                 answers={"https://api.wiley.com/": httpx.Response(200, content=make_pdf(
+                     [TITLE + " " + WORDS[:1800], WORDS[1800:]], font="AdvPi7"))})
+    assert "AdvPi7" in run(s, tmp_path).text_warning
 
 
 def test_outcomes_are_in_the_database_and_the_csvs_are_written_from_it(tmp_path):

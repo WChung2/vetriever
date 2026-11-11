@@ -37,6 +37,11 @@ CREATE TABLE IF NOT EXISTS topic_log (topic TEXT, round INTEGER, what TEXT, deta
   outcome TEXT, date TEXT);
 CREATE TABLE IF NOT EXISTS topic_inputs (topic TEXT PRIMARY KEY, words TEXT NOT NULL,
   question TEXT NOT NULL, terms TEXT NOT NULL, rounds INTEGER NOT NULL, started TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS search_state (topic TEXT PRIMARY KEY, budget REAL NOT NULL,
+  since TEXT NOT NULL, next_round INTEGER NOT NULL DEFAULT 0, proposal TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS search_rounds (topic TEXT NOT NULL, round INTEGER NOT NULL,
+  started TEXT NOT NULL, ended TEXT NOT NULL DEFAULT '', relevant INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (topic, round));
 """
 LEADS = {"review", "systematic review", "meta-analysis", "practice guideline", "guideline",
          "consensus development conference", "review-article"}
@@ -242,14 +247,19 @@ def to_screen(db: sqlite3.Connection, topic_name: str) -> list[dict]:
 
 
 def save_screening(db: sqlite3.Connection, topic_name: str, rnd: int, results: list[dict]):
+    """Store screening results. A record screened again keeps its first round and the vet's
+    decision: only the model's answers change."""
     rows = []
     for r in results:
         a = r.get("answers") or {}
         rows.append((topic_name, r["key"], r["decision"], r["rule"], "|".join(r["flags"]),
                      a.get("summary", ""), a.get("design", ""), json.dumps(a, ensure_ascii=False),
                      rnd, date.today().isoformat()))
-    db.executemany("INSERT OR REPLACE INTO screening (topic, key, decision, rule, flags, summary, "
-                   "design, answers, round, date) VALUES (?,?,?,?,?,?,?,?,?,?)", rows)
+    db.executemany("INSERT INTO screening (topic, key, decision, rule, flags, summary, design, "
+                   "answers, round, date) VALUES (?,?,?,?,?,?,?,?,?,?) "
+                   "ON CONFLICT (topic, key) DO UPDATE SET decision = excluded.decision, "
+                   "rule = excluded.rule, flags = excluded.flags, summary = excluded.summary, "
+                   "design = excluded.design, answers = excluded.answers", rows)
     db.commit()
 
 

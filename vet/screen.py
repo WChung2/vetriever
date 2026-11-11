@@ -9,12 +9,13 @@ summary for the vet's list. Code decides from the answers (`decide`): a record i
 whose quote is in the record; anything unclear, unanswered or unbacked is kept.
 """
 import json
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import CancelledError, ThreadPoolExecutor
 
 from .settings import ROOT
 from .validate import _flat
 
 BATCH = 10
+WORKERS = 4         # calls in flight at once
 SLOTS = ("species", "condition", "also_called", "related", "treatments")
 SENT = ("key", "year", "title", "abstract", "subject_terms", "publication_types")
 
@@ -40,6 +41,15 @@ SCHEMA = {"type": "object", "required": ["records"], "properties": {"records": {
                                                   "retrospective", "case_series", "single_case",
                                                   "other", "unclear"]},
             "summary": {"type": "string"}}}}}}
+
+class Cut(Exception):
+    """Screening stopped part-way: `done` holds the records already answered (paid for: the
+    caller saves them), `why` the error that stopped it."""
+
+    def __init__(self, done: list[dict], why: Exception):
+        super().__init__(str(why))
+        self.done, self.why = done, why
+
 
 # the check whose "no" each off-topic rule rests on
 RULE_CHECK = {"O1": "animals", "O2": "condition", "O3": "animals"}
@@ -83,10 +93,38 @@ def decide(a: dict, text: str) -> tuple[str, str, list[str]]:
     return ("lead" if a["kind"] == "review" else "keep"), "", flags
 
 
+def confidence(answers: dict, flags: list[str], text: str) -> tuple[str, str]:
+    """How sure the screening is that a kept record is on topic, as high | medium | low, and
+    why in plain words. It comes from what the record shows, not from a number the model gives:
+    whether the checks came back clear, and whether each answer's quote is really in the record
+    (`text`: title, abstract, subject terms). Free, and the same for every record ever screened."""
+    condition = (answers.get("condition") or {})
+    animals = (answers.get("animals") or {})
+    c, a = condition.get("answer", ""), animals.get("answer", "")
+    if "not_answered" in flags or "unbacked_drop" in flags:
+        return "low", "the screening could not back up its answer"
+    if c not in ("yes", "related") or a not in ("patients", "survey"):
+        if a == "healthy_treated":
+            return "medium", "healthy animals given a treatment, not patients with the condition"
+        return "low", "the abstract doesn't show clearly that it studies this"
+    if "title_only" in flags:
+        return "medium", "there is no abstract: judged from the title alone"
+    if c == "related":
+        return "medium", "it studies a related condition"
+    if a == "survey":
+        return "medium", "a survey of vets or owners, not a study of patients"
+    flat = _flat(text)
+    if not all(q.get("quote", "").strip() and _flat(q["quote"]) in flat
+               for q in (condition, animals)):
+        return "medium", "a quote behind its answer could not be found in the record"
+    return "high", "the abstract shows the condition in patients, and both quotes are in it"
+
+
 def screen(name: str, topic: dict, records: list[dict], llm, batch: int = BATCH,
-           workers: int = 4) -> list[dict]:
+           workers: int = WORKERS) -> list[dict]:
     """One result per record, in order. A record is a dict with the keys in SENT (the
-    service's own names: subject_terms = MeSH headings, publication_types)."""
+    service's own names: subject_terms = MeSH headings, publication_types). When a call fails
+    or the budget stops one, the batches not sent are cancelled and Cut carries the rest."""
     system = system_prompt(name, topic)
     batches = [records[i:i + batch] for i in range(0, len(records), batch)]
 
@@ -101,12 +139,23 @@ def screen(name: str, topic: dict, records: list[dict], llm, batch: int = BATCH,
                 pass
         return {}                       # its records are kept, flagged not_answered
 
+    answers, sent, why = {}, set(), None
     with ThreadPoolExecutor(workers) as pool:
-        answers = {}
-        for got in pool.map(run, batches):
-            answers |= got
+        futures = [(pool.submit(run, part), part) for part in batches]
+        for future, part in futures:
+            try:
+                answers |= future.result()
+                sent |= {r["key"] for r in part}
+            except CancelledError:
+                pass
+            except Exception as e:  # noqa: BLE001 (raised again below, with what was finished)
+                why = why or e
+                for later, _ in futures:
+                    later.cancel()
     out = []
     for r in records:
+        if r["key"] not in sent:
+            continue
         a = answers.get(r["key"])
         flags = [] if r.get("abstract", "").strip() else ["title_only"]
         if a is None:
@@ -117,4 +166,6 @@ def screen(name: str, topic: dict, records: list[dict], llm, batch: int = BATCH,
         decision, rule, more = decide(a, text)
         out.append({"key": r["key"], "decision": decision, "rule": rule,
                     "flags": flags + more, "answers": a})
+    if why:
+        raise Cut(out, why)
     return out

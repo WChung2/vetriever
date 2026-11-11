@@ -155,12 +155,19 @@ def _words(n: int) -> list[str]:
     return [f"{head} {joint}{r}".strip() for r in rest for joint in ("", "and ")]
 
 
+# "87 400" is one number, but in a table row "2.6 143.7", "± 24 126" and "138–146 144.9" are two:
+# a space joins two digit groups only when the first starts a number (not after a decimal point,
+# ±, a minus or a range dash) and the second ends it (no decimal after it)
+THOUSANDS = re.compile(r"(?<![\d.±\-–(])(?<![\d.±\-–(]\s)(\d{1,3})\s(\d{3})(?![\d.])")
+
+
 def _in_quote(value: str, ftype: str, quote: str) -> bool:
     """Is the value in the quote? A number must stand on its own (4 is not in "24 h"), may
     drop its leading zero (.017), and may be written in words; a date needs its year."""
     if ftype in ("integer", "number"):
         q = unicodedata.normalize("NFKC", quote).replace("\u2212", "-")
-        q = re.sub(r"(\d)[,\s](\d{3})(?!\d)", r"\1\2", q)          # 1,200 and 87 400
+        q = re.sub(r"(\d),(\d{3})(?!\d)", r"\1\2", q)               # 1,200
+        q = THOUSANDS.sub(r"\1\2", q)                                   # 87 400, not "2.6 143.7"
         forms = {value, value[1:] if value.startswith("0.") else value}
         if any(re.search(rf"(?<![\d.]){re.escape(f)}(?!\d|\.\d)", q) for f in forms):
             return True

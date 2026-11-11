@@ -1,0 +1,33 @@
+{#- The start: a new question. Examples fill the box; the Planner starts when the vet sends it. -#}
+{% extends "base.html" %}
+{% from "ui/layout.html" import stack, row, page_header %}
+{% from "ui/data.html" import card, caption, item, item_list %}
+{% from "ui/feedback.html" import alert %}
+{% from "ui/button.html" import button %}
+{% from "ui/form.html" import textarea_field %}
+{% block title %}New question{% endblock %}
+{% block content %}
+{{ page_header("What would you like to find out?", "Describe the animals, the condition and what you need to know. Vetriever plans the search with you, shows real papers to check, then builds a cited database.") }}
+{% call stack(gap=6) %}
+  {% if note %}{{ alert(note, variant="destructive") }}{% endif %}
+  {% call card() %}
+    <form method="post" action="/chat">
+      <input type="hidden" name="csrf" value="{{ token }}">
+      <input type="hidden" name="request" value="{{ request_id }}">
+      {% call stack(gap=3) %}
+        {{ textarea_field("text", "Your question", value=q, rows=3, required=true, id="say", maxlength="2000", placeholder="Describe your question…") }}
+        {% call row(gap=3, justify="between") %}
+          {{ caption("Your words go to Gemini (Google, paid tier) to plan the search. Don't type client or patient details. The database stays on this Mac.") }}
+          {{ button("Send", type="submit", icon_name="arrow-up") }}
+        {% endcall %}
+      {% endcall %}
+    </form>
+  {% endcall %}
+  {% call stack(gap=2) %}
+    {{ caption("Examples: click one to put it in the box") }}
+    {% call item_list() %}
+      {% for e in examples %}{{ item(e, "example", href="/?q=" ~ (e | urlencode), clamp=false) }}{% endfor %}
+    {% endcall %}
+  {% endcall %}
+{% endcall %}
+{% endblock %}

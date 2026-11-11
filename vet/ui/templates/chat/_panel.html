@@ -1,0 +1,89 @@
+{#- What the vet can do now, at the end of the chat. Code starts nothing on its own. -#}
+{% from "chat/macros.html" import hidden, budget_field, money_line %}
+{% from "ui/layout.html" import stack, row %}
+{% from "ui/data.html" import card, caption %}
+{% from "ui/table.html" import table, cell %}
+{% from "ui/disclosure.html" import collapsible %}
+{% from "ui/button.html" import button %}
+{% from "ui/feedback.html" import alert %}
+{% if note %}{{ alert(note, variant="destructive") }}{% endif %}
+{% if p.busy and p.stage not in ("running", "planning") %}{{ alert("A step is running on another search: wait for it to finish.") }}{% endif %}
+
+{% if p.stage == "running" %}
+  {% include "chat/_live.html" %}
+
+{% elif p.stage == "retry" %}
+  {% call card(title="The Planner didn't finish", id="now") %}
+    <form method="post" action="/topics/{{ name }}/plan">{{ hidden(token, request_id) }}
+      {{ button("Ask the Planner again", type="submit", name="go", value="retry", disabled=p.busy) }}
+    </form>
+  {% endcall %}
+
+{% elif p.stage == "ready" %}
+  {% call card(title="Ready to search", id="now") %}
+    {% call stack(gap=3) %}
+    {% if p.records is not none %}
+      <p>This search finds about <b>{{ p.records | thousands }} records</b> ({{ p.pubmed | thousands }} in PubMed, {{ p.europepmc | thousands }} more in Europe PMC). Screening them costs about <b>{{ p.cost | usd }}</b>.</p>
+    {% else %}
+      <p>The number of records isn't known until the search has run. Code counts them first, and stops before any paid step if the budget doesn't cover them.</p>
+    {% endif %}
+    <form method="post" action="/topics/{{ name }}/search">{{ hidden(token, request_id) }}
+      {% call row(gap=3, align="end") %}{{ budget_field(p) }}{{ button("Start the search", type="submit", disabled=p.busy) }}{% endcall %}
+    </form>
+    {{ caption("After the first round the search stops and shows you what it found. You decide whether to widen it. " ~ (p.cap_left | usd) ~ " is left under the spending cap.") }}
+    {% endcall %}
+  {% endcall %}
+
+{% elif p.stage == "paused" %}
+  {% call card(title="This round was cut off", id="now") %}
+    {% call stack(gap=3) %}
+    <p>{% if p.waiting %}{{ p.waiting | thousands }} record{{ "" if p.waiting == 1 else "s" }} still to screen. {% endif %}Everything screened so far is saved and won't be paid for again.</p>
+    <form method="post" action="/topics/{{ name }}/search">{{ hidden(token, request_id) }}
+      {% call row(gap=3, align="end") %}{{ budget_field(p) }}{{ button("Carry on", type="submit", disabled=p.busy) }}{% endcall %}
+    </form>
+    {{ money_line(p) }}
+    {{ button("Go to Review without finishing this round", href="/topics/" ~ name ~ "/review", variant="link") }}
+    {% endcall %}
+  {% endcall %}
+
+{% elif p.stage in ("decide", "ask") %}
+  {% call card(title=("Round " ~ p.rounds[-1].round ~ " finished") if p.rounds else "Search rounds", id="now") %}
+    {% call stack(gap=3) %}
+    {% if p.rounds %}
+      {% call table([{"label": "Round"}, {"label": "Screened"}, {"label": "Kept"}, {"label": "Cost"}], rows=p.rounds) %}
+        {% for r in p.rounds %}<tr>{{ cell(r.round) }}{{ cell(r.screened | thousands, numeric=true) }}{{ cell(r.kept | thousands, numeric=true) }}{{ cell(r.cost | usd, numeric=true) }}</tr>{% endfor %}
+      {% endcall %}
+    {% endif %}
+    {% if p.advice %}<p>{{ p.advice }}</p>{% endif %}
+
+    {% if p.stage == "decide" and p.next.steps %}
+      <h4>Round {{ p.next.round }} would</h4>
+      <ul>{% for st in p.next.steps %}<li>{{ st }}</li>{% endfor %}</ul>
+      {% if p.next.nothing_left %}<p>The model expects this to find little or nothing new.</p>{% endif %}
+      {% if p.next.reasoning %}{% call collapsible("The model's reasoning") %}<p>{{ p.next.reasoning }}</p>{% endcall %}{% endif %}
+      <form method="post" action="/topics/{{ name }}/widen">{{ hidden(token, request_id) }}
+        <input type="hidden" name="round" value="{{ p.next.round }}">
+        {% call row(gap=3, align="end") %}
+          {{ budget_field(p) }}
+          {{ button("Widen one more round", type="submit", disabled=p.busy) }}
+          {{ button("Finish, go to Review", href="/topics/" ~ name ~ "/review", variant="ghost") }}
+        {% endcall %}
+      </form>
+      {{ money_line(p) }}
+    {% elif p.stage == "decide" %}
+      <p>The model has nothing left to try, so there is no next round to run.</p>
+      {{ button("Finish, go to Review", href="/topics/" ~ name ~ "/review") }}
+    {% else %}
+      <p>{% if p.rounds %}There is no proposal for a next round: the budget ran out first.{% else %}This search ran before each round was your decision.{% endif %} Want another round? Code asks the model what it would try, and you decide from there. Nothing is searched yet.</p>
+      <form method="post" action="/topics/{{ name }}/propose">{{ hidden(token, request_id) }}
+        {% call row(gap=3, align="end") %}
+          {{ budget_field(p) }}
+          {{ button("Ask what the next round would do", type="submit", variant="outline", disabled=p.busy) }}
+          {{ button("Go to Review", href="/topics/" ~ name ~ "/review") }}
+        {% endcall %}
+      </form>
+      {{ money_line(p) }}
+    {% endif %}
+    {% endcall %}
+  {% endcall %}
+{% endif %}

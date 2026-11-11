@@ -7,7 +7,7 @@ import tomllib
 import pytest
 
 from tests.literature import Literature, rec
-from vet import approve, plan, review
+from vet import approve, budget, plan, review
 from vet import connectors as c
 from vet import search as s
 from vet.llm import LLM, FakeGemini
@@ -49,7 +49,7 @@ def lit(monkeypatch):
 @pytest.fixture
 def pipeline_settings(monkeypatch):
     p = settings()["pipeline"]
-    for k, v in {"term_max_new": 2, "term_min_kept": 0.5, "review_rounds": 3, "round_max_new": 50,
+    for k, v in {"term_max_new": 2, "term_min_kept": 0.5, "round_max_new": 50,
                  "screen_budget": 100, "plan_rounds": 2, "plan_papers": 3}.items():
         monkeypatch.setitem(p, k, v)
 
@@ -190,6 +190,16 @@ def test_planner_rounds_then_start_writes_the_topic_file(tmp_path, monkeypatch, 
 
 # ---- search ⇄ review -------------------------------------------------------------------
 
+def widen_until_nothing_new(name, llm, db) -> list[dict]:
+    """A vet who widens for as long as a round finds something."""
+    def quiet(_):
+        return None
+    rounds = [review.first_round(name, llm, db=db, say=quiet)]
+    while rounds[-1]["new_kept"] and budget.state(db, name)["proposal"]:
+        rounds.append(review.widen(name, llm, db=db, say=quiet))
+    return rounds
+
+
 def screen_answer(prompt):
     keys = [json.loads(line)["key"] for line in prompt.splitlines()[1:]]
     out = []
@@ -221,7 +231,8 @@ def test_review_loop_follows_adds_brakes_and_stops(tmp_path, monkeypatch, lit, p
                 "follow": [{"key": "2", "how": "references"}]}
         return none                  # the revision, and round 3: nothing more
     db = s.connect(tmp_path / "v.db")
-    out = review.run("imha", LLM(FakeGemini(respond), corpus=tmp_path), db=db, say=lambda m: None)
+    budget.set_budget(db, "imha", 2.0)
+    out = widen_until_nothing_new("imha", LLM(FakeGemini(respond), corpus=tmp_path), db)
     dec = review.decisions(db, "imha")
     assert dec == {"1": "keep", "2": "lead", "3": "keep", "4": "keep", "5": "aside"}
     assert "9" not in dec            # a cat paper from the review's references isn't screened
@@ -229,7 +240,8 @@ def test_review_loop_follows_adds_brakes_and_stops(tmp_path, monkeypatch, lit, p
     assert "autoimmune haemolytic anaemia" in active and "anaemia" not in active
     assert "too many records" in calls[1] and '"new_records": 3' in calls[1]   # 6, 7, 8: 3 and 4 came with the term added first
     assert '"3": false' in calls[0]  # the known paper the first search misses is reported
-    assert [r["new_kept"] for r in out["rounds"]] == [3, 1, 0]   # the known paper 3 from round 1 and len(calls) == 3
+    assert [r["new_kept"] for r in out] == [3, 1, 0]   # the known paper 3 from round 1
+    assert len(calls) == 4           # a proposal after each of three rounds, and the revision
 
 
 def test_a_new_term_whose_records_are_dropped_is_taken_out(tmp_path, monkeypatch, lit, pipeline_settings):
@@ -245,7 +257,8 @@ def test_a_new_term_whose_records_are_dropped_is_taken_out(tmp_path, monkeypatch
         return {"reasoning": "", "term_changes": add if len(calls) == 1 else [], "follow": [],
                 "extra_queries": [], "nothing_left": False}
     db = s.connect(tmp_path / "v.db")
-    review.run("imha", LLM(FakeGemini(respond), corpus=tmp_path), db=db, say=lambda m: None)
+    budget.set_budget(db, "imha", 2.0)
+    widen_until_nothing_new("imha", LLM(FakeGemini(respond), corpus=tmp_path), db)
     gone = db.execute("SELECT why FROM terms WHERE term = 'anaemia'").fetchone()[0]
     assert gone == "only 2 of its 5 records kept"
 
@@ -305,8 +318,9 @@ def test_unbacked_keeps_dont_keep_the_search_going(tmp_path, monkeypatch, lit, p
             {"block": "condition", "action": "add", "kind": "text", "term": "anaemia", "evidence": "x"}],
             "extra_queries": [{"query": 'BODY:"IMHA"', "target": "x"}]}
     db = s.connect(tmp_path / "v.db")
-    out = review.run("imha", LLM(FakeGemini(respond), corpus=tmp_path), db=db, say=lambda m: None)
-    assert [r["new_kept"] for r in out["rounds"]] == [3, 0] and len(calls) == 1
+    budget.set_budget(db, "imha", 2.0)
+    out = widen_until_nothing_new("imha", LLM(FakeGemini(respond), corpus=tmp_path), db)
+    assert [r["new_kept"] for r in out] == [3, 0] and len(calls) == 2
     log = {r[0]: r[1] for r in db.execute("SELECT what, outcome FROM topic_log")}
     assert log["query"] == "refused: full-text search is not used"
     assert log["yield"] == "1 relevant of 5 screened"        # 3 (the known paper) only

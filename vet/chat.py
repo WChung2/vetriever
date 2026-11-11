@@ -81,6 +81,18 @@ def jobs(con: sqlite3.Connection, topic: str = "", state: str = "") -> list[dict
     return [dict(zip(cols, r)) for r in con.execute(sql + " ORDER BY id", args)]
 
 
+def topic_of(db: Path, request: str) -> str:
+    """The topic of the job a request started ('' when it started none)."""
+    if not Path(db).exists():
+        return ""
+    con = connect(db)
+    try:
+        row = con.execute("SELECT topic FROM jobs WHERE request = ?", (request,)).fetchone()
+    finally:
+        con.close()
+    return row[0] if row else ""
+
+
 class Runner:
     """Runs one job at a time in a background thread."""
 

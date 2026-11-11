@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% from "topics/macros.html" import topic_header, funnel %}
+{% from "ui/layout.html" import stack %}
+{% block title %}{{ s.title }} · studies{% endblock %}
+{% block content %}
+{{ topic_header(name, s, "studies", counts) }}
+{% call stack(gap=6) %}
+  {{ funnel(counts) }}
+  {% set topic = name %}{% include "studies/_table.html" %}
+{% endcall %}
+{% endblock %}

@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% from "ui/layout.html" import stack, grid, page_header, section %}
+{% from "ui/data.html" import card, caption, stat %}
+{% from "ui/table.html" import table, cell %}
+{% block title %}Spending{% endblock %}
+{% macro money(rows) %}
+  {% call table([{"label": "Name"}, {"label": "Spent"}], rows=rows, empty_title="Nothing spent yet") %}
+    {% for k, v in rows %}<tr>{{ cell(k) }}{{ cell(v | usd, numeric=true) }}</tr>{% endfor %}
+  {% endcall %}
+{% endmacro %}
+{% block content %}
+{{ page_header("Spending", "model calls, all searches") }}
+{% call stack(gap=6) %}
+  {{ caption("Every model call is logged in corpus/spend.csv. Paid calls stop before the cap.", tone=none) }}
+  {% call grid(cols=3, gap=4) %}
+    {{ stat("Spent", spend.total | usd, (((spend.share * 100) | round | int) ~ "% of the " ~ (spend.cap | usd) ~ " cap · " ~ (spend.calls | thousands) ~ " calls")) }}
+    {% call card(title="By step") %}{{ money(spend.by_step) }}{% endcall %}
+    {% call card(title="By model") %}{{ money(spend.by_model) }}{% endcall %}
+  {% endcall %}
+  {% call section(title="By day") %}{{ money(spend.by_day) }}{% endcall %}
+{% endcall %}
+{% endblock %}

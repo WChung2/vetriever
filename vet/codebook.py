@@ -235,6 +235,8 @@ def write_markdown(cb: Codebook, path: Path = ROOT / "codebook.md"):
         out.append(f"\n## {t}\n\n{HEAD}")
         out += [_line(cb, f) for f in fields]
     for topic, fields in cb.topic_fields.items():
+        if not fields:                 # a search asked in the chat: local, with no fields of its own
+            continue
         out.append(f"\n## topic: {topic}\n\nStored in `topic_fields` with topic = `{topic}`."
                    f"\n\n{HEAD}")
         out += [_line(cb, f) for f in fields.values()]

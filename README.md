@@ -38,8 +38,9 @@ extraction runner is being built.
 - `vocab/countries.txt`: country names, taken from the app's own ClinicalTrials.gov data.
 - `templates/`: the 14 empty tables (header row only).
 - `corpus/`: everything a run produces, kept local: `vetriever.db` (the database), `docs/`
-  (original files and their text), `out/<source_id>/` (one folder per document), `merged/`
-  (the database exported as CSV), `reports/`.
+  (original files and their text), `text_before/` (texts as they were before `vet reread`),
+  `out/<source_id>/` (one folder per document), `merged/` (the database exported as CSV),
+  `reports/`.
 
 ## The database
 
@@ -65,12 +66,16 @@ uv run vet check                # check the database, and list possible duplicat
 uv run vet check corpus/out/PMID31234567   # check one document's folder
 uv run vet export               # write the database out as CSV (corpus/merged)
 uv run vet plan <topic> "<the vet's words>"   # Planner round 1 (paid); then --answers <file>, --start
-uv run vet search <topic>       # search, screen and review until a round finds nothing new (paid)
+uv run vet search <topic>       # one round of search and screening, then stop (paid); --budget <USD>
+uv run vet search <topic> --widen   # the next round, as proposed: widening is your decision (paid)
 uv run vet list <topic>         # the kept list for the vet; --approve-all approves it
 uv run vet fetch <PMID or DOI>… # full texts into corpus/docs; --from <file>, or --topic <topic>
+uv run vet reread               # read the stored PDFs again after the reader improves (free, local)
 uv run vet who --topic <topic>  # authors and institutions of the approved papers (OpenAlex, free)
 uv run vet ui                   # the screens in your browser, on this Mac only (free)
 uv run vet ping                 # one tiny live call to each literature service (free)
+uv run python scripts/tablebench.py packets <reader>…   # the table reader benchmark: blind packets, then `score`
+uv run python scripts/golden_run.py <pdf|pypdf|mineru>  # the golden test: Gemini answers from one route (paid)
 uv run pytest                   # tests (free: no API calls)
 ./scripts/check.sh              # everything CI checks: run before every push
 ./scripts/smoke.sh              # the real services on known papers (needs keys and VPN)
@@ -86,6 +91,14 @@ and only for non-commercial research. Publisher web pages are never scraped. A f
 only if it is the whole paper (no one-page previews) and the record's title is in it; the
 rest is listed in `corpus/reports/to_download.csv` with a link, to download by hand.
 
+Some PDFs draw symbols with fonts whose codes say nothing about what they show: the text layer
+has "o" where the page shows "<", "9" for "×", "l" for "µ". `vet/pdftext.py` corrects these on
+this computer, with no AI, from a table of what each font really draws, made by looking at the
+glyph outlines in the fonts themselves. It corrects the font and not the text, so only the
+symbols change. A code nobody has checked comes out as "�", never as a wrong letter. A paper
+with unread characters or an unchecked symbol font gets a `text_warning`. `vet reread` applies
+an improved reader to the stored PDFs and keeps each earlier text in `corpus/text_before/`.
+
 ## Checks (CI)
 
 `scripts/check.sh` runs six checks, and GitHub Actions runs the same script on a clean
@@ -97,13 +110,17 @@ machine (Python 3.12 and 3.13) for every push and pull request:
 4. `templates/` and `codebook.md` match `codebook.csv`;
 5. nothing private would be published: no `.env`, nothing from `corpus/` or `examples/`, no
    data file (the only tables allowed are `codebook.csv` and the empty `templates/`), no
-   Google-style API key, and none of the values in your own `.env`;
+   search asked in the chat (only the three example topics are published), no Google-style API
+   key, and none of the values in your own `.env`;
 6. the screens for real (`scripts/ui_smoke.py`), on made-up data in a temporary folder:
    - `vet ui` starts and every page answers with its security headers;
    - your machine's network address and other host names are refused;
    - htmx is the published release;
-   - in headless Chrome no page has a blocked style or script, or a script error (skipped
-     where Chrome is missing);
+   - in headless Chrome no page has a blocked style or script, or a script error, including
+     the Planner's form, the budget form, the widen panel and a running step's live progress
+     (skipped where Chrome is missing);
+   - a real click on Next from the bottom of a long list lands at the top of the next page,
+     with the header still on screen;
    - a second `vet ui` on a taken port stops with a message.
 
    It stops only the server it started.
@@ -130,9 +147,29 @@ approve, reject, or keep a dropped article anyway) opens with how
 the search was built (the vet's words as typed, the agreed question, the expanded terms and
 the exact queries run), every count explains itself, and each record says how it was found. It is a thin layer (`vet/ui/`,
 Jinja templates and htmx) over plain functions in `vet/views.py` and `vet/chat.py`, so another
-front end can reuse them. The chat box opens to the Planner in the next step. It makes no model calls and loads nothing from the internet. It listens
-on 127.0.0.1 only, answers only 127.0.0.1 or localhost, and accepts a change only from its
-own pages with their token. Looking at a page opens the database read-only.
+front end can reuse them. It loads nothing from the internet. It listens on 127.0.0.1 only,
+answers only 127.0.0.1 or localhost, and accepts a change only from its own pages with their
+token. Looking at a page opens the database read-only and spends nothing.
+
+A question typed in the chat starts a search. The Planner asks about the scope and shows real
+papers to mark; you revise or agree. You then set a budget and start the search. **Code never
+widens a search on its own:** each round stops and shows what it found and cost, and what the
+next round would do, and you choose to widen or finish. The budget is a hard limit: a round
+starts only with its cost and a margin left, and the ledger refuses any call that could pass it.
+A round cut off by the budget, an error or a stop carries on where it stopped, with nothing lost
+or paid twice. Paid steps run in the background, one at a time (`vet/jobs.py`).
+
+The Review list is made to be read from the top, not worked through. Each kept article shows a
+confidence (high, medium or low) with its reason: how sure the screening is that it is on topic.
+Code works it out from what the record shows, free, and no model grades itself. The list is
+ordered by confidence, then by whether an article names a treatment from the question, then by
+design, then newest first. One click approves the high-confidence articles. On Claude's sealed
+benchmark verdicts, high was right 25 of 25 times, medium 17 of 18 and low 3 of 4.
+
+Those paid steps are the only things that reach out, and only when you start one: what you
+type and the papers' abstracts go to Gemini (paid tier), so don't type client or patient
+details. A search asked in the chat stays on this Mac: its topic file is git-ignored, and check
+step 5 refuses to publish one.
 
 ## What is shared and what stays local
 

@@ -1,0 +1,144 @@
+{#- Step 3: the vet reviews what the search found. fjkit components only (fjkit check). -#}
+{% extends "base.html" %}
+{% from "topics/macros.html" import topic_header, funnel, counted %}
+{% from "ui/layout.html" import stack, row, grid, page_header, section %}
+{% from "ui/data.html" import card, badge, caption, description_list, description_item, code_block %}
+{% from "ui/disclosure.html" import collapsible %}
+{% from "ui/button.html" import button, button_group %}
+{% from "ui/form.html" import text_field, select_field %}
+{% block title %}{{ s.title }} · review{% endblock %}
+{% block content %}
+{% set lists = {
+  "to_review": ("To review", "Articles the screening kept, waiting for your decision. Approve the ones worth reading in full; reject the rest."),
+  "approved": ("Approved by you", "The articles you approved. Their full texts are downloaded next. Undo any you changed your mind about."),
+  "rejected": ("Rejected by you", "The articles you rejected. They go no further; undo one to review it again."),
+  "dropped": ("Dropped by screening", "Judged off topic from the abstract, each with its reason and the sentence it rests on. If one belongs in, keep it anyway."),
+  "overviews": ("Overviews & guidelines", "Review articles, guidelines and consensus statements: not studies, so not read into the database. The search followed their references to find more studies; open them as background."),
+  "aside": ("Letters & errata", "Letters, comments and errata, set aside without screening."),
+} %}
+{{ topic_header(name, s, "review", counts) }}
+{% call stack(gap=6) %}
+
+{% call card(title="How this search was built") %}
+  {% call description_list() %}
+    {% if b.words %}{% call description_item("You asked") %}<q>{{ b.words }}</q>{% endcall %}{% endif %}
+    {% if b.question %}{% call description_item("Understood as") %}{{ b.question }}
+      {{ caption("The Planner's reading of your words" ~ ((", agreed after " ~ b.rounds ~ " round" ~ ("" if b.rounds == 1 else "s") ~ ((" on " ~ (b.started | day)) if b.started else "")) if b.rounds else "") ~ ". It is used to judge each paper's abstract; it is not what PubMed was sent.") }}{% endcall %}{% endif %}
+    {% if b.blocks %}{% call description_item("Searched for") %}
+      {% call stack(gap=2) %}
+      {% for block, terms in b.blocks.items() %}
+        {% if not loop.first %}{{ caption("AND") }}{% endif %}
+        {% call row(gap=2) %}
+          <b>{{ block }}</b>
+          {% for t in terms %}{{ badge(t.term ~ ((" " ~ (t.hits | thousands)) if t.hits is defined and t.hits is not none else ""), "outline", title=t.kind ~ ((" · from " ~ sources.get(t.source, t.source)) if t.source else "")) }}{% if not loop.last %}{{ caption("or") }}{% endif %}{% endfor %}
+        {% endcall %}
+      {% endfor %}
+      {{ caption("This is the search PubMed was sent: any word of each block, and every block." ~ (" The number after a word is how many PubMed records it finds on its own." if b.blocks.values() | first | selectattr("hits", "defined") | list else "")) }}
+      {% if b.first %}<p>{% for q in b.first %}{{ "In " if loop.first else "in " }}{{ "PubMed" if q.service == "pubmed" else "Europe PMC" }} this found <b>{{ q.hits | thousands }}</b> records{% if not loop.last %}; {% endif %}{% endfor %}{% if b.first[0].date %}, on {{ b.first[0].date | day }}{% endif %}.</p>{% endif %}
+      {% endcall %}
+    {% endcall %}{% endif %}
+    {% if b.added_text %}{{ description_item("Review rounds added", b.added_text) }}{% endif %}
+  {% endcall %}
+  {% if b.first or b.later %}
+  {% call collapsible("The exact queries (" ~ (b.first + b.later) | length ~ ")") %}
+    {% call stack(gap=3) %}
+    {% for q in b.first + b.later %}
+      {{ code_block(q.query, "round " ~ q.round ~ " · " ~ ("PubMed" if q.service == "pubmed" else "Europe PMC") ~ " · " ~ (q.hits | thousands) ~ " records", wrap=true) }}
+    {% endfor %}
+    {% endcall %}
+  {% endcall %}
+  {% endif %}
+{% endcall %}
+
+{{ funnel(counts) }}
+
+{% call section(title="Your review", description=lists[data.view][1]) %}
+  <nav aria-label="Lists">
+  {% call button_group() %}
+  {% for v, pair in lists.items() %}
+    {% if data.view == v %}{{ button(counted(pair[0], data.tabs[v]), href="/topics/" ~ name ~ "/records?view=" ~ v, variant="secondary", aria_current="page") }}
+    {% else %}{{ button(counted(pair[0], data.tabs[v]), href="/topics/" ~ name ~ "/records?view=" ~ v, variant="ghost") }}{% endif %}
+  {% endfor %}
+  {% endcall %}
+  </nav>
+
+  <form action="/topics/{{ name }}/review" method="get" role="search"
+        hx-get="/topics/{{ name }}/review" hx-target="#records" hx-swap="outerHTML" hx-push-url="true"
+        hx-trigger="input changed delay:300ms from:input[name=q], change from:select">
+    <input type="hidden" name="view" value="{{ data.view }}">
+    {% call grid(cols=4, gap=3) %}
+      {{ text_field("q", "Search titles and summaries", value=q, type="search", placeholder="carprofen, cats, survival…", autocomplete="off") }}
+      {% set flag_opts = [] %}{% for f, n in data.flags | dictsort %}{% set _ = flag_opts.append((f, flag_names.get(f, f | label) ~ " (" ~ n ~ ")")) %}{% endfor %}
+      {{ select_field("flag", "Flag", options=flag_opts, selected=flag, blank="All flags") }}
+      {% set design_opts = [] %}{% for d, n in data.designs | dictsort %}{% set _ = design_opts.append((d, designs.get(d, d | label) ~ " (" ~ n ~ ")")) %}{% endfor %}
+      {{ select_field("design", "Design", options=design_opts, selected=design, blank="All designs") }}
+      {% if data.levels.high or data.levels.medium or data.levels.low %}
+      {% set level_opts = [] %}{% for l, n in data.levels.items() %}{% if n %}{% set _ = level_opts.append((l, level_names[l] ~ " (" ~ n ~ ")")) %}{% endif %}{% endfor %}
+      {{ select_field("level", "Confidence", options=level_opts, selected=level, blank="All confidence") }}
+      {% endif %}
+      <noscript>{{ button("Filter", type="submit", variant="outline") }}</noscript>
+    {% endcall %}
+  </form>
+
+  {% if data.levels.high or data.levels.medium or data.levels.low %}
+  {% call collapsible("How is this list ordered, and what does confidence mean?") %}
+    {% call stack(gap=3) %}
+    <p>The list puts first what is most likely to matter, so you can start at the top and stop when you have enough. Surest first; within that, papers naming a treatment from your question; then the stronger design (randomised trial, prospective, retrospective, case series, single case); then the newest.</p>
+    {% call description_list() %}
+      {{ description_item("High confidence", "The abstract shows the condition in patients, and the sentences behind that were found in the record.") }}
+      {{ description_item("Medium confidence", "Probably useful, with a reason to look: a related condition, healthy animals given a treatment, a survey, no abstract, or a sentence that could not be found.") }}
+      {{ description_item("Low confidence", "Kept so nothing is lost, but the abstract doesn't show clearly that it studies this.") }}
+    {% endcall %}
+    <p>Confidence is worked out by code from what each record shows, not a score the model gives itself. It says how sure the screening is that a paper is on topic, not how good the paper is.</p>
+    {% endcall %}
+  {% endcall %}
+  {% endif %}
+
+  {% if data.view == "to_review" and data.tabs.to_review %}
+  {% call card(size="sm") %}
+    {% call stack(gap=3) %}
+    <form method="post" action="/topics/{{ name }}/decide" hx-post="/topics/{{ name }}/decide"
+          hx-confirm="Approve all {{ data.tabs.to_review }} articles waiting for your review? You can undo any of them.">
+      <input type="hidden" name="csrf" value="{{ token }}">
+      <input type="hidden" name="all" value="1"><input type="hidden" name="action" value="approve">
+      <input type="hidden" name="view" value="to_review">
+      {% call row(gap=3, justify="between") %}
+        <span><b>{{ data.tabs.to_review | thousands }}</b> article{{ "" if data.tabs.to_review == 1 else "s" }} wait{{ "s" if data.tabs.to_review == 1 else "" }} for your decision{% if data.tabs.approved %}; {{ data.tabs.approved | thousands }} approved so far{% endif %}.</span>
+        {{ button("Approve all " ~ (data.tabs.to_review | thousands), type="submit", variant="outline") }}
+      {% endcall %}
+    </form>
+    {% if high_waiting %}
+    <form method="post" action="/topics/{{ name }}/decide" hx-post="/topics/{{ name }}/decide"
+          hx-confirm="Approve the {{ high_waiting }} high-confidence articles? You can undo any of them.">
+      <input type="hidden" name="csrf" value="{{ token }}">
+      <input type="hidden" name="all" value="1"><input type="hidden" name="action" value="approve">
+      <input type="hidden" name="level" value="high"><input type="hidden" name="view" value="to_review">
+      {% call row(gap=3, justify="between") %}
+        <span>The quickest start: the articles the screening is surest about.</span>
+        {{ button("Approve the " ~ (high_waiting | thousands) ~ " high-confidence", type="submit") }}
+      {% endcall %}
+    </form>
+    {% endif %}
+    {% endcall %}
+  {% endcall %}
+  {% elif data.view == "to_review" and data.tabs.approved %}
+  {{ caption("✓ Nothing waits for your review: " ~ (data.tabs.approved | thousands) ~ " approved" ~ ((", " ~ (data.tabs.rejected | thousands) ~ " rejected") if data.tabs.rejected else "") ~ ".", tone=none) }}
+  {% elif data.view == "approved" and data.tabs.approved %}
+  {% call card(size="sm") %}
+    <form method="post" action="/topics/{{ name }}/decide" hx-post="/topics/{{ name }}/decide"
+          hx-confirm="Undo all {{ data.tabs.approved }} approvals of this search? They go back to To review.">
+      <input type="hidden" name="csrf" value="{{ token }}">
+      <input type="hidden" name="all" value="1"><input type="hidden" name="action" value="undo">
+      <input type="hidden" name="view" value="approved">
+      {% call row(gap=3, justify="between") %}
+        <span>{{ data.tabs.approved | thousands }} approved{% if not data.tabs.to_review %}: your review of this search is done{% endif %}.</span>
+        {{ button("Undo all approvals", type="submit", variant="destructive") }}
+      {% endcall %}
+    </form>
+  {% endcall %}
+  {% endif %}
+
+  {% include "review/_records.html" %}
+{% endcall %}
+{% endcall %}
+{% endblock %}

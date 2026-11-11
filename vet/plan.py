@@ -8,13 +8,15 @@ must exist (unknown ones are dropped and shown), and each heading's natural othe
 (MeSH entry terms) are added as text words. Code counts PubMed hits per term and for the whole
 search, and picks papers for the vet to mark.
 
-The vet reads corpus/plan/<topic>/round<n>.md, fills answers<n>.toml (answers, papers marked
-relevant or not, papers they already know) and runs the next round; after the last round
-(a setting) or whenever the vet is happy, `--start` writes the topic file.
+The vet answers in the chat (`answers_from`), or from the command line reads
+corpus/plan/<topic>/round<n>.md and fills answers<n>.toml (answers, papers marked relevant or
+not, papers they already know). After the last round (a setting) or whenever the vet is happy,
+`agree` (or `--start`) writes the topic file.
 """
 import json
 import random
 import re
+import tomllib
 from datetime import date, datetime
 from pathlib import Path
 
@@ -58,10 +60,41 @@ SCHEMA = {"type": "object", "required": ["reasoning", "restatement", "species", 
                   "properties": {"question": {"type": "string"},
                                  "options": {"type": "array", "items": {"type": "string"}}}}}}}
 SHOWN_BEST, SHOWN_RANDOM = 5, 2        # papers shown: PubMed's best matches, then a random pick
+NOTE = "The vet adds"                  # free text typed beside the Planner's questions
+NONE_NAMED = ["none named"]            # a screening slot the vet's question leaves empty
+COMMON = {"a", "an", "and", "are", "at", "by", "can", "do", "does", "for", "from", "how", "in",
+          "into", "is", "it", "of", "on", "or", "our", "should", "the", "to", "was", "we", "were",
+          "what", "when", "which", "who", "why", "will", "with", "would"}
 
 
 def folder(topic: str) -> Path:
     return CORPUS / "plan" / topic
+
+
+def topic_name(words: str, taken: set[str]) -> str:
+    """A short name for a new search, from the vet's words: letters, digits and _ only."""
+    kept = [w for w in re.findall(r"[a-z0-9]+", words.lower()) if w not in COMMON][:5]
+    name = kept[0][:36] if kept else "search"
+    name = name if name[0].isalpha() else f"q_{name}"[:36]     # the codebook's rule for a name
+    for w in kept[1:]:                     # whole words only
+        if len(name) + 1 + len(w) > 36:
+            break
+        name += f"_{w}"
+    out, n = name, 2
+    while out in taken:
+        out, n = f"{name}_{n}", n + 1
+    return out
+
+
+def open_topic(words: str) -> str:
+    """A new search from the chat: its name, and a topic file with only the vet's words until
+    a plan is agreed. Topic files made here stay on this Mac (.gitignore, check.sh step 5)."""
+    topics = ROOT / "topics"
+    taken = {p.stem for p in topics.glob("*.toml")} | {p.name for p in (CORPUS / "plan").glob("*")}
+    name = topic_name(words, taken)
+    (topics / f"{name}.toml").write_text(f"# Topic {name}: being planned in the chat\n"
+                                         f"question = {_toml(words)}\n", "utf-8")
+    return name
 
 
 def _state(topic: str) -> dict:
@@ -221,6 +254,11 @@ def _message(state: dict, last: int) -> str:
                              ensure_ascii=False, indent=0),
                   "", "The vet's answers:",
                   json.dumps(prev.get("answers", []), ensure_ascii=False)]
+        limit = settings()["pipeline"]["screen_budget"]
+        if prev["checked"].get("hits", 0) > limit:
+            lines += ["", (f"Code's observation: this search finds {prev['checked']['hits']:,} "
+                           f"PubMed records and at most {limit:,} can be screened. Narrow the "
+                           "condition block, using the vet's answers.")]
         lines += ["", ("Papers the vet marked (relevant: yes or no), with title, abstract and "
                        "subject terms; a paper's key is its PMID:")]
         for p in prev.get("papers", []):
@@ -234,8 +272,10 @@ def _message(state: dict, last: int) -> str:
     return "\n".join(lines)
 
 
-def run_round(topic: str, llm, http: c.Http, words: str = "", answers_file: Path | None = None) -> dict:
-    """One Planner round: the first from the vet's words, the next from an answers file."""
+def run_round(topic: str, llm, http: c.Http, words: str = "", answers_file: Path | None = None,
+              answers: dict | None = None) -> dict:
+    """One Planner round: the first from the vet's words, the next from their answers (a file,
+    or a dict of the same shape from the chat)."""
     cfg = settings()["pipeline"]
     state = _state(topic)
     if words:
@@ -250,9 +290,11 @@ def run_round(topic: str, llm, http: c.Http, words: str = "", answers_file: Path
     if len(state["rounds"]) >= cfg["plan_rounds"]:
         raise ValueError(f"{topic}: {cfg['plan_rounds']} rounds done; run --start")
     if state["rounds"]:
-        if answers_file is None:
+        if answers_file is None and answers is None:
             raise ValueError("give the answers file of the last round (--answers)")
-        read_answers(state, Path(answers_file), http)
+        if answers is None:
+            answers = tomllib.loads(Path(answers_file).read_text("utf-8"))
+        apply_answers(state, answers, http)
         prev = state["rounds"][-1]["checked"]
         if state["known"] and "hits" in prev:
             state["known_found"] = known_found(state["known"], prev["terms"], http)
@@ -278,9 +320,24 @@ def run_round(topic: str, llm, http: c.Http, words: str = "", answers_file: Path
     return state
 
 
-def read_answers(state: dict, path: Path, http: c.Http):
-    import tomllib
-    a = tomllib.loads(path.read_text("utf-8"))
+def answers_from(state: dict, get) -> dict:
+    """The chat form's answers, in the shape of an answers file. `get(field)` reads the form.
+    Questions and papers come from the saved round: a form can only pick what was offered."""
+    last = state["rounds"][-1]
+    asked = []
+    for i, q in enumerate(last["checked"].get("questions", [])):
+        if get(f"q{i}") in q["options"]:
+            asked.append({"question": q["question"], "answer": get(f"q{i}")})
+    note = " ".join(get("note").split())[:2000]
+    if note:
+        asked.append({"question": NOTE, "answer": note})
+    papers = [{"key": p["key"], "relevant": get(f"p{p['key']}")} for p in last.get("papers", [])
+              if get(f"p{p['key']}") in ("yes", "no")]
+    return {"question": asked, "paper": papers,
+            "known": [line for line in get("known").splitlines() if line.strip()][:50]}
+
+
+def apply_answers(state: dict, a: dict, http: c.Http):
     last = state["rounds"][-1]
     last["answers"] = [{"question": q["question"], "answer": q.get("answer", "").strip()}
                        for q in a.get("question", []) if q.get("answer", "").strip()]
@@ -336,6 +393,32 @@ def write_for_vet(topic: str, state: dict, last: int):
 
 # ---- start: write the topic file -------------------------------------------------------
 
+def agree(topic: str, http: c.Http, answers: dict | None = None) -> Path:
+    """The vet agrees the last round: their marks are kept, the search is counted (free) so
+    the screens can quote its cost, and the topic file is written. A search too large to
+    screen is refused, so the vet can still narrow it."""
+    state = _state(topic)
+    if not state.get("rounds"):
+        raise ValueError(f"no plan for {topic} yet")
+    if answers:
+        apply_answers(state, answers, http)
+    ch = state["rounds"][-1]["checked"]
+    if "hits" not in ch:
+        raise ValueError(f"the last round has no usable search: {ch['problems']}")
+    europe = query(ch["terms"], "europepmc")
+    outside = min(c.europepmc_search(http, europe, 1)[0], 1000) if europe else 0
+    limit = settings()["pipeline"]["screen_budget"]
+    if ch["hits"] + outside > limit:
+        last = len(state["rounds"]) >= settings()["pipeline"]["plan_rounds"]
+        raise ValueError(f"This search finds {ch['hits'] + outside:,} records, more than the "
+                         f"{limit:,} one search may screen. " + (
+                             "The Planner has had its last round: ask a new, narrower question."
+                             if last else "Say below how to narrow it, then revise."))
+    state["estimate"] = {"pubmed": ch["hits"], "europepmc": outside}
+    _save(topic, state)
+    return start(topic)
+
+
 def start(topic: str) -> Path:
     """Write topics/<topic>.toml from the last round; the topic's own [[fields]] are kept and
     the previous file is saved in corpus/plan/<topic>/."""
@@ -365,9 +448,9 @@ def start(topic: str) -> Path:
              "", f"question = {_toml(ch['restatement'])}",
              f"known = {_toml(state.get('known', []))}", "", "[screen]",
              f"species = {_toml(ch['species'])}", f"condition = {_toml(ch['condition'])}",
-             f"also_called = {_toml(also)}",
-             f"related = {_toml([i['item'] for i in ch['related']])}",
-             f"treatments = {_toml([i['item'] for i in ch['treatments']])}", ""]
+             f"also_called = {_toml(also or NONE_NAMED)}",
+             f"related = {_toml([i['item'] for i in ch['related']] or NONE_NAMED)}",
+             f"treatments = {_toml([i['item'] for i in ch['treatments']] or NONE_NAMED)}", ""]
     for t in ch["terms"]:
         lines += ["[[terms]]"] + [f"{k} = {_toml(t[k])}" for k in ("block", "kind", "term",
                                                                    "source", "evidence")] + [""]

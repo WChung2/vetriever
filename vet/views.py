@@ -1,18 +1,21 @@
 """What the screens show: read-only queries on the database that return plain dicts and lists.
 
-The web pages (vet/ui) call only these functions and `approve.set_approved`, so another front
-end (the clinical_ai app, or a React page) can reuse them unchanged. Every query here opens the
-database read-only, so no screen can change data by being looked at.
+The web pages (vet/ui) read through these functions, so another front end (the clinical_ai
+app, or a React page) can reuse them unchanged. Every query here opens the database read-only,
+so no screen can change data by being looked at.
 """
 import csv
 import json
+import math
 import re
 import sqlite3
 import tomllib
 from pathlib import Path
 
+from . import budget
 from . import chat as chatdb
 from .approve import DESIGN_ORDER
+from .screen import confidence
 from .settings import CORPUS, ROOT, settings
 from .who import rank
 
@@ -33,6 +36,8 @@ FLAGS = {"related_condition": "related condition", "research_animals": "healthy 
          "survey": "survey", "single_case": "single case", "title_only": "no abstract",
          "unbacked_drop": "kept: no quote for its drop", "not_answered": "kept: not answered"}
 PER_PAGE = 50
+LEVELS = ("high", "medium", "low")
+SHOWN_EVENTS = {"failed", "interrupted", "stopped"}     # what stays in the chat from a job
 
 
 def read_only(db: Path) -> sqlite3.Connection:
@@ -121,18 +126,37 @@ def topics(db: Path) -> list[dict]:
 
 
 SELECT = ("SELECT s.key, s.decision, s.rule, s.flags, s.summary, s.design, s.approved, "
-          "{rej} AS rejected, s.answers, r.title, r.year, r.journal, r.pmid, r.doi "
-          "FROM screening s JOIN records r ON r.key = s.key")
+          "{rej} AS rejected, s.answers, r.title, r.abstract, r.mesh, r.year, r.journal, r.pmid, "
+          "r.doi FROM screening s JOIN records r ON r.key = s.key")
+
+
+def treatment_words(topic: dict) -> list[str]:
+    """What a search's question is about, as words to look for in a record: the topic's
+    treatments, with a list in brackets taken apart ("steroids (prednisone, ...)")."""
+    words = {w.strip().lower() for item in topic.get("screen", {}).get("treatments", [])
+             for w in re.split(r"[(),;]", item)}
+    return sorted(w for w in words if len(w) >= 4 and w != "none named")
+
+
+def _rank(r: dict) -> tuple:
+    """The order a vet reads in: surest first; within that, what names a treatment from their
+    question; then the stronger design; then the newest."""
+    return ((LEVELS + ("",)).index(r["confidence"]), not r["names"],
+            DESIGN_ORDER.index(r["design"]) if r["design"] in DESIGN_ORDER else 9,
+            -int(r["year"]) if str(r["year"]).isdigit() else 0, r["key"])
 
 
 def records(db: Path, name: str, view: str = "to_review", q: str = "", flag: str = "",
-            design: str = "", page: int = 1) -> dict:
-    """One page of a list of the Review step, with the filters' choices and every list's count."""
-    topic_file(name)
+            design: str = "", page: int = 1, level: str = "") -> dict:
+    """One page of a list of the Review step, ranked (`_rank`), with the filters' choices and
+    every list's count."""
+    words = treatment_words(topic_file(name))
     view = view if view in VIEWS else "to_review"
+    level = level if level in LEVELS else ""
     page = max(1, page)
     out = {"rows": [], "total": 0, "page": page, "pages": 1, "view": view,
-           "tabs": {v: 0 for v in VIEWS}, "flags": {}, "designs": {}}
+           "tabs": {v: 0 for v in VIEWS}, "flags": {}, "designs": {},
+           "levels": dict.fromkeys(LEVELS, 0), "named": 0}
     if not Path(db).exists():
         return out
     con = read_only(db)
@@ -157,18 +181,17 @@ def records(db: Path, name: str, view: str = "to_review", q: str = "", flag: str
         if design:
             where.append("s.design = ?")
             args.append(design)
-        sql = " AND ".join(where)
-        out["total"] = con.execute(f"SELECT COUNT(*) FROM screening s JOIN records r "
-                                   f"ON r.key = s.key WHERE s.topic = ? AND {sql}",
-                                   args).fetchone()[0]
+        rows = sorted((_record(r, words) for r in con.execute(
+            SELECT.format(rej=_rej(con)) + f" WHERE s.topic = ? AND {' AND '.join(where)}", args)),
+            key=_rank)
+        for r in rows:
+            if r["confidence"]:
+                out["levels"][r["confidence"]] += 1
+        rows = [r for r in rows if r["confidence"] == level] if level else rows
+        out["total"] = len(rows)
+        out["named"] = sum(bool(r["names"]) for r in rows)
         out["pages"] = max(1, -(-out["total"] // PER_PAGE))
-        order = " ".join(f"WHEN '{d}' THEN {i}" for i, d in enumerate(DESIGN_ORDER))
-        rows = con.execute(
-            SELECT.format(rej=_rej(con)) + f" WHERE s.topic = ? AND {sql} "
-            "ORDER BY instr(s.flags, 'research_animals') > 0, instr(s.flags, 'unbacked_drop') > 0, "
-            f"CASE s.design {order} ELSE 9 END, r.year DESC, s.key LIMIT ? OFFSET ?",
-            [*args, PER_PAGE, (page - 1) * PER_PAGE]).fetchall()
-        out["rows"] = [_record(r) for r in rows]
+        out["rows"] = rows[(page - 1) * PER_PAGE:page * PER_PAGE]
         hows = _found_by(con, name, [r["key"] for r in out["rows"]])
         for r in out["rows"]:
             r["found_by"] = hows.get(r["key"], [])
@@ -204,27 +227,35 @@ def record(db: Path, name: str, key: str) -> dict | None:
     try:
         r = con.execute(SELECT.format(rej=_rej(con)) + " WHERE s.topic = ? AND s.key = ?",
                         (name, key)).fetchone()
-        return _record(r) | {"found_by": _found_by(con, name, [key]).get(key, [])} if r else None
+        return (_record(r, treatment_words(topic_file(name)))
+                | {"found_by": _found_by(con, name, [key]).get(key, [])}) if r else None
     finally:
         con.close()
 
 
-def keys_in(db: Path, name: str, view: str) -> list[str]:
-    """Every record of one list of the Review step (to approve or undo them all at once)."""
+def keys_in(db: Path, name: str, view: str, level: str = "") -> list[str]:
+    """Every record of one list of the Review step, or of one confidence level in it (to
+    approve or undo them all at once)."""
     topic_file(name)
     con = read_only(db)
     try:
-        return [r[0] for r in con.execute(f"SELECT s.key FROM screening s WHERE s.topic = ? AND "
-                                          f"{_view(con, view)}", (name,))]
+        rows = con.execute(SELECT.format(rej=_rej(con)) + f" WHERE s.topic = ? AND "
+                           f"{_view(con, view)}", (name,)).fetchall()
+        return [r["key"] for r in rows if not level or _record(r)["confidence"] == level]
     finally:
         con.close()
 
 
-def _record(r) -> dict:
+def _record(r, words: list[str] = ()) -> dict:
     a = json.loads(r["answers"] or "{}")
+    flags = [f for f in (r["flags"] or "").split("|") if f]
+    text = " ".join(r[k] or "" for k in ("title", "abstract", "mesh"))
+    sure, why = confidence(a, flags, text) if r["decision"] == "keep" else ("", "")
+    low = text.lower()
     return {"key": r["key"], "decision": r["decision"], "rule": r["rule"],
-            "rule_text": RULES.get(r["rule"], ""),
-            "flags": [f for f in (r["flags"] or "").split("|") if f],
+            "rule_text": RULES.get(r["rule"], ""), "flags": flags,
+            "confidence": sure, "confidence_why": why,
+            "names": [w for w in words if w in low] if sure else [],
             "summary": r["summary"] or "", "design": r["design"] or "",
             "approved": r["approved"] or "", "rejected": r["rejected"] or "",
             "title": r["title"] or "(no title)",
@@ -521,6 +552,7 @@ def history(db: Path, corpus: Path, name: str) -> list[dict]:
     if state.get("words"):
         items.append({"who": "vet", "kind": "question", "text": state["words"],
                       "time": (state.get("rounds") or [{}])[0].get("time", "")})
+    live = panel(db, corpus, name)["stage"] == "planning"
     for r in state.get("rounds", []):
         ch, asked = r.get("checked", {}), r.get("draft", {}).get("questions", [])
         answers = {a["question"]: a["answer"] for a in r.get("answers", [])}
@@ -533,28 +565,41 @@ def history(db: Path, corpus: Path, name: str) -> list[dict]:
                       "restatement": ch.get("restatement", ""), "chips": chips,
                       "terms": ch.get("terms", []), "hits": ch.get("hits"),
                       "problems": ch.get("problems", []),
+                      "live": live and r is state["rounds"][-1],
                       "questions": [{"question": q.get("question", ""),
                                      "options": q.get("options", []),
                                      "answer": answers.get(q.get("question", ""), "")}
                                     for q in asked],
                       "papers": [{"key": p["key"], "title": p.get("title", ""),
+                                  "abstract": p.get("abstract", ""),
                                   "mark": p.get("relevant", "")} for p in r.get("papers", [])]})
+        offered = {q.get("question", "") for q in asked}
+        items += [{"who": "vet", "kind": "answer", "text": a["answer"], "time": ""}
+                  for a in r.get("answers", []) if a["question"] not in offered]
     if not Path(db).exists():
         return items
     con = read_only(db)
     try:
         have, cost = _tables(con), _costs(corpus, name)
-        if (state.get("started") or "found" in have) and state.get("rounds"):
+        searched = "found" in have and con.execute(
+            "SELECT 1 FROM found WHERE topic = ? LIMIT 1", (name,)).fetchone()
+        if (state.get("started") or searched) and state.get("rounds"):
             items.append({"who": "event", "kind": "done", "time": state.get("started", ""),
                           "text": f"Plan agreed after {len(state['rounds'])} round"
                                   f"{'' if len(state['rounds']) == 1 else 's'}",
                           "cost": cost["plan"]})
         if "screening" in have:
             rounds = {}
+            # the round that first found a record, which a later re-screening can't change
+            first = ("(SELECT MIN(f.round) FROM found f WHERE f.topic = s.topic AND "
+                     "f.key = s.key)" if "found" in have else "NULL")
             for rnd, decision, n in con.execute(
-                    "SELECT round, decision, COUNT(*) FROM screening WHERE topic = ? AND "
-                    "decision != 'aside' GROUP BY round, decision ORDER BY round", (name,)):
+                    f"SELECT COALESCE({first}, s.round) AS r, s.decision, COUNT(*) FROM "
+                    "screening s WHERE s.topic = ? AND s.decision != 'aside' GROUP BY r, "
+                    "s.decision ORDER BY r", (name,)):
                 rounds.setdefault(rnd, {})[decision] = n
+            timed = {r["round"]: r for r in budget.rounds(con, name)} \
+                if "search_rounds" in have else {}
             aside = con.execute("SELECT COUNT(*) FROM screening WHERE topic = ? AND "
                                 "decision = 'aside'", (name,)).fetchone()[0]
             log = {}
@@ -578,15 +623,16 @@ def history(db: Path, corpus: Path, name: str) -> list[dict]:
                                       f"{d.get('keep', 0):,} kept, "
                                       f"{_n(d.get('lead', 0), 'overview')}, "
                                       f"{d.get('off_topic', 0):,} dropped"
-                                      + (f" (widening: {review})" if review else "")})
+                                      + (f" (widening: {review})" if review else ""),
+                              "cost": budget.spent(corpus, name, timed[rnd]["started"],
+                                                   timed[rnd]["ended"]) if rnd in timed else 0})
             if aside:
                 items.append({"who": "event", "kind": "progress", "time": "",
                               "text": f"{_n(aside, 'record')} set aside without screening "
                                       "(letters, comments, errata)"})
-            if rounds:
+            if rounds and not timed:          # a search from before the vet decided each round
                 items.append({"who": "event", "kind": "done", "time": "",
-                              "text": "Search finished: a round found no new relevant records",
-                              "cost": cost["screen"] + cost["review"]})
+                              "text": "Search finished", "cost": cost["screen"] + cost["review"]})
         c = counts(db, name)
         if c["approved"]:
             items.append({"who": "event", "kind": "done", "time": "",
@@ -602,12 +648,135 @@ def history(db: Path, corpus: Path, name: str) -> list[dict]:
                           "text": f"{_n(c['studies'], 'study', 'studies')} read into the "
                                   f"database, of {_n(c['full_text'], 'full text')} downloaded",
                           "link": "studies"})
-        for m in chatdb.messages(con, name):
-            items.append({"who": m["role"], "kind": m["kind"], "time": m["time"],
-                          "cost": m["cost"], **m["body"]})
+        said = chatdb.messages(con, name)
+        open_problems = _problems(said)
+        for m in said:          # a job's own progress is shown while it runs (`live`), not here
+            if m["role"] != "event" or (m in open_problems and not live):
+                items.append({"who": m["role"], "kind": m["kind"], "time": m["time"],
+                              "cost": m["cost"], **m["body"]})
     finally:
         con.close()
     return items
+
+
+def _problems(said: list[dict]) -> list[dict]:
+    """What went wrong in the latest job: a problem since solved no longer applies."""
+    last_job = max((m["n"] for m in said if m["kind"] == "started"), default=0)
+    return [m for m in said if m["role"] == "event" and m["kind"] in SHOWN_EVENTS
+            and m["n"] > last_job]
+
+
+def _cents_up(usd: float) -> float:
+    return math.ceil(round(usd * 100, 6)) / 100
+
+
+def panel(db: Path, corpus: Path, name: str) -> dict:
+    """What the chat offers a search now: its stage and the money. The stages:
+    running (a job is on it), planning (the Planner waits for the vet), retry (the first
+    Planner round didn't finish), ready (agreed, not searched), paused (a round was cut off),
+    decide (a proposal waits: widen or finish), ask (no proposal: a search from before, or
+    the budget ran out first)."""
+    t, state = topic_file(name), plan_state(corpus, name)
+    money, cfg = spending(corpus), settings()["pipeline"]
+    cap_left = max(0.0, money["cap"] - money["total"])
+    p = {"stage": "", "job": None, "busy": "", "cap_left": cap_left, "spent": 0.0, "left": 0.0,
+         "budget": 0.0, "rounds": [], "records": None, "waiting": 0, "next": None, "advice": "",
+         "cost": 0.0, "needs": 0.0, "suggest": 0.0, "pubmed": 0, "europepmc": 0, "problem": "",
+         "last_round": len(state.get("rounds", [])) >= cfg["plan_rounds"]}
+    st, rows, found = {}, [], 0
+    if Path(db).exists():
+        con = read_only(db)
+        try:
+            have = _tables(con)
+            for j in chatdb.jobs(con, state="running"):
+                if j["topic"] == name:
+                    p["job"] = j
+                else:
+                    p["busy"] = j["topic"]
+            problems = _problems(chatdb.messages(con, name))
+            p["problem"] = problems[-1]["body"].get("text", "") if problems else ""
+            if "found" in have:
+                found = con.execute("SELECT COUNT(DISTINCT key) FROM found WHERE topic = ?",
+                                    (name,)).fetchone()[0]
+            if "search_state" in have:
+                st, rows = budget.state(con, name), budget.rounds(con, name)
+            if rows and "screening" in have:
+                p["waiting"] = con.execute(
+                    "SELECT COUNT(DISTINCT key) FROM found WHERE topic = ? AND key NOT IN "
+                    "(SELECT key FROM screening WHERE topic = ?)", (name, name)).fetchone()[0]
+                seen = {}
+                for rnd, decision, n in con.execute(
+                        "SELECT round, decision, COUNT(*) FROM screening WHERE topic = ? AND "
+                        "decision != 'aside' GROUP BY round, decision", (name,)):
+                    seen.setdefault(rnd, {})[decision] = n
+                p["rounds"] = [{"round": r["round"], "screened": sum(seen.get(r["round"], {}).values()),
+                                "kept": seen.get(r["round"], {}).get("keep", 0),
+                                "cost": budget.spent(corpus, name, r["started"], r["ended"])}
+                               for r in rows]
+        finally:
+            con.close()
+    if st:
+        p["budget"] = st["budget"]
+        p["spent"] = budget.spent(corpus, name, st["since"])
+        p["left"] = st["budget"] - p["spent"]
+    if p["job"]:
+        p["stage"] = "running"
+    elif state.get("rounds") and not state.get("started") and not found:
+        p["stage"] = "planning"
+    elif not t.get("terms"):
+        p["stage"] = "retry"
+    elif not found and not rows:
+        p["stage"] = "ready"
+        est = state.get("estimate", {})
+        if est:
+            p["pubmed"], p["europepmc"] = est["pubmed"], est["europepmc"]
+            p["records"] = est["pubmed"] + est["europepmc"]
+        p["cost"], p["needs"] = budget.round_cost(p["records"] or 0), budget.needed(p["records"] or 0)
+    elif rows and not rows[-1]["ended"]:
+        p["stage"] = "paused"
+        p["cost"], p["needs"] = budget.round_cost(p["waiting"]), budget.needed(p["waiting"])
+    elif st.get("proposal"):
+        p["stage"] = "decide"
+        answer = json.loads(st["proposal"])["answer"]
+        steps = budget.next_steps(answer)
+        p["next"] = {"round": st["next_round"], "steps": steps, "reasoning": answer.get("reasoning", ""),
+                     "nothing_left": answer.get("nothing_left", False)}
+        p["cost"] = budget.round_cost(cfg["round_max_new"])
+        p["needs"] = budget.needed(cfg["round_max_new"])
+    else:
+        p["stage"] = "ask"
+        p["cost"], p["needs"] = settings()["spending"]["review_usd_per_call"], budget.ask_needed()
+    if rows and rows[-1]["ended"] and rows[-1]["relevant"] == 0:
+        p["advice"] = "This round found nothing new on topic, so another round is unlikely to help."
+    wanted = max(st.get("budget", cfg["search_budget"]), p["spent"] + p["needs"])
+    p["suggest"] = _cents_up(min(wanted, p["spent"] + cap_left))
+    return p
+
+
+def progress(db: Path, job: dict, last: int = 6) -> list[str]:
+    """The latest things a running job said."""
+    con = read_only(db)
+    try:
+        said = [m["body"]["text"] for m in chatdb.messages(con, job["topic"])
+                if m["kind"] == "progress" and m["body"].get("job") == job["id"]]
+    finally:
+        con.close()
+    return said[-last:]
+
+
+def budget_problem(text: str, p: dict) -> str:
+    """Why a budget typed by the vet can't be used, as a note's name ('' when it can)."""
+    try:
+        usd = float(text)
+    except (TypeError, ValueError):
+        return "budget_number"
+    if not math.isfinite(usd) or usd <= 0:
+        return "budget_number"
+    if usd - p["spent"] > p["cap_left"] + 0.005:
+        return "over_cap"
+    if usd - p["spent"] < p["needs"] - 0.005:
+        return "too_low"
+    return ""
 
 
 def _term_list(terms) -> list[dict]:

@@ -10,8 +10,9 @@ fail() { printf '\nFAILED: %s\n' "$1" >&2; exit 1; }
 step "1/6 packages match uv.lock"
 uv sync --locked
 
-step "2/6 lint (ruff)"
+step "2/6 lint (ruff, and fjkit check: the fjkit pages use only its vocabulary)"
 uv run --no-sync ruff check .
+uv run --no-sync fjkit check vet/ui/templates
 
 step "3/6 tests (network blocked)"
 uv run --no-sync pytest -q
@@ -25,6 +26,11 @@ files=$(git ls-files --cached --others --exclude-standard)
 private=$(printf '%s\n' "$files" | grep -E '(^|/)\.env$|(^|/)(corpus|examples|merged|out|reports)/|^docs/pipeline\.md$|^decisions\.md$' || true)
 [ -z "$private" ] || fail "private files would be published (keep them git-ignored):
 $private"
+# a search asked in the chat stays here: only the example topics are published
+topics=$(printf '%s\n' "$files" | grep -E '^topics/' \
+         | grep -vE '^topics/(cie|imha|surgical_pain)\.toml$' || true)
+[ -z "$topics" ] || fail "a search from the chat would be published (keep it git-ignored):
+$topics"
 # no data on GitHub: the only tables allowed are the codebook and the empty templates
 data=$(printf '%s\n' "$files" | grep -iE '\.(csv|tsv|db|sqlite3?|xlsx?|pdf|docx|parquet|jsonl)$' \
        | grep -vE '^codebook\.csv$|^templates/[a-z_]+\.csv$' || true)

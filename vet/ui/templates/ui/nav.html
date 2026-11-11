@@ -1,0 +1,44 @@
+{# fjkit:eject nav 0.4.1 macros:theme_toggle=6b00d9d85f97 #}
+{#
+  Ejected from fjkit 0.4.1: your copy of `theme_toggle`,
+  shadowing the kit's ui/nav.html. Edit it freely.
+
+  The other 3 macro(s) below are re-exported from the kit, and still get
+  its fixes. Call sites do not know the difference either way —
+  {% from "ui/nav.html" import … %} keeps working.
+
+  `fjkit check` names the macro when the kit's version of one you own moves on.
+  To take another macro, run `fjkit eject` again. It replaces that macro's re-export
+  line below and leaves the rest of this file as you have it. To give one back, put
+  `{% set <name> = _fjkit.<name> %}` where your copy was and drop `<name>=…` from the
+  stamp on line 1. To give all of them back, delete this file.
+#}
+{% import "fjkit/ui/nav.html" as _fjkit %}
+
+{% from "ui/icon.html" import icon %}
+
+{% set brand = _fjkit.brand %}
+
+{% set nav_links = _fjkit.nav_links %}
+
+{#
+  theme_toggle() — light/dark switch.
+
+  The only inline script fjkit ships besides the shell's flash-guard. Two
+  lines, and it has to run before any bundle would have loaded, so it is not in
+  a .js file.
+
+  Renders nothing under a fixed `FjkitConfig.color_scheme`, so an app that
+  fills `header_actions` itself can call it unguarded.
+#}
+{% macro theme_toggle() -%}
+  {%- if fjkit_color_scheme.toggle -%}
+  <button class="btn" data-variant="ghost" data-size="icon-sm" type="button"
+          aria-label="Toggle theme"
+          data-theme-toggle{# Vetriever: was an inline onclick; static/fj-ui.js does this #}>
+    {{- icon("sun", 16, "hidden dark:block") }}{{ icon("moon", 16, "dark:hidden") -}}
+  </button>
+  {%- endif %}
+{%- endmacro %}
+
+{% set breadcrumb = _fjkit.breadcrumb %}

@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% from "ui/layout.html" import stack, page_header %}
+{% from "ui/data.html" import caption %}
+{% from "ui/button.html" import button %}
+{% block title %}{{ status }}{% endblock %}
+{% block content %}
+{{ page_header("Not found" if status == 404 else "Not allowed" if status == 403 else "Something went wrong") }}
+{% call stack(gap=4) %}
+  {{ caption(detail, tone=none) }}
+  <div>{{ button("Back to the start", href="/") }}</div>
+{% endcall %}
+{% endblock %}

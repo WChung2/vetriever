@@ -25,6 +25,10 @@ class BudgetExceeded(RuntimeError):
     pass
 
 
+CALL_TIMEOUT_MS = 600_000   # a silent connection must not hang a run for ever
+CACHE_TTL = "1800s"      # a held document outlives its calls by far; it is deleted after them
+
+
 class Ledger:
     """Money spent so far (corpus/spend.csv) plus money reserved by calls in flight."""
     COLUMNS = ("time", "step", "doc", "model", "input_tokens", "output_tokens",
@@ -65,13 +69,25 @@ class Gemini:
 
     def __init__(self):
         from google import genai
+        from google.genai import types
         key = env("GEMINI_API_KEY")
         if not key:
             raise RuntimeError("GEMINI_API_KEY is not set in .env (paid tier only)")
-        self.client = genai.Client(api_key=key)
+        self.client = genai.Client(http_options=types.HttpOptions(timeout=CALL_TIMEOUT_MS), api_key=key)
 
-    def generate(self, model, system, prompt, schema, thinking, max_output, step=""):
-        """The answer, the token counts, and the model's summary of its thinking."""
+    def open_cache(self, model, system, text):
+        """Hold a document at Google for the calls that follow: its name and size in tokens."""
+        from google.genai import types
+        c = self.client.caches.create(model=model, config=types.CreateCachedContentConfig(
+            system_instruction=system or None, contents=[text], ttl=CACHE_TTL))
+        return c.name, c.usage_metadata.total_token_count or 0
+
+    def close_cache(self, name):
+        self.client.caches.delete(name=name)
+
+    def generate(self, model, system, prompt, schema, thinking, max_output, step="", cache=""):
+        """The answer, the token counts, and the model's summary of its thinking. cache: a held
+        document, which then carries the system prompt too."""
         from google.genai import types
         # "none" sends no thinking setting, for models that refuse a thinking level
         # (Gemini 2.5 Flash-Lite thinks only when given a thinking budget)
@@ -80,7 +96,8 @@ class Gemini:
         r = self.client.models.generate_content(
             model=model, contents=prompt,
             config=types.GenerateContentConfig(
-                system_instruction=system or None, response_mime_type="application/json",
+                system_instruction=None if cache else system or None,
+                cached_content=cache or None, response_mime_type="application/json",
                 response_json_schema=schema, max_output_tokens=max_output,
                 thinking_config=thinking_config))
         u = r.usage_metadata
@@ -89,7 +106,8 @@ class Gemini:
         thoughts = "\n".join(p.text or "" for p in parts if p.thought)
         return text, {"input": u.prompt_token_count or 0,
                       "output": u.candidates_token_count or 0,
-                      "thoughts": u.thoughts_token_count or 0}, thoughts
+                      "thoughts": u.thoughts_token_count or 0,
+                      "cached": getattr(u, "cached_content_token_count", 0) or 0}, thoughts
 
 
 def _empty_answer(schema: dict):
@@ -110,12 +128,21 @@ class FakeGemini:
 
     def __init__(self, responder=None):
         self.responder = responder or (lambda step, prompt, schema: _empty_answer(schema))
-        self.calls = []
+        self.calls, self.held, self.closed = [], [], []
 
-    def generate(self, model, system, prompt, schema, thinking, max_output, step=""):
-        self.calls.append({"model": model, "system": system, "prompt": prompt})
+    def open_cache(self, model, system, text):
+        self.held.append(text)
+        return f"cache-{len(self.held)}", len(system + text) // 4
+
+    def close_cache(self, name):
+        self.closed.append(name)
+
+    def generate(self, model, system, prompt, schema, thinking, max_output, step="", cache=""):
+        self.calls.append({"model": model, "system": system, "prompt": prompt, "cache": cache})
         answer = json.dumps(self.responder(step, prompt, schema))
-        return answer, {"input": len(system + prompt) // 4, "output": len(answer) // 4, "thoughts": 0}, ""
+        held = len(self.held[-1]) // 4 if cache else 0
+        return answer, {"input": len(system + prompt) // 4 + held, "output": len(answer) // 4,
+                        "thoughts": 0, "cached": held}, ""
 
 
 class LLM:
@@ -131,6 +158,7 @@ class LLM:
         # fake calls are counted in their own ledger so they never touch real spending
         self.ledger = Ledger(corpus / ("spend_fake.csv" if self.fake else "spend.csv"),
                              spend["cap_usd"] if cap is None else cap)
+        self.held = {}          # documents held at Google: name -> (tokens, time opened)
 
     def price(self, model: str) -> dict:
         prices = self.cfg["prices"]
@@ -143,7 +171,35 @@ class LLM:
                                  "re-check it before paid calls")
         return prices[model]
 
-    def call(self, step: str, prompt: str, schema: dict, system: str = "", doc: str = "_"):
+    def open_cache(self, step: str, system: str, text: str, doc: str = "_") -> str:
+        """Send a document once, for all its calls. Empty if it can't be held (too short, or the
+        model refuses): the calls then send it themselves."""
+        model = self.cfg["models"][step]
+        p = self.price(model)
+        worst = len(system + text) / 3 * p["input"] / 1e6
+        self.ledger.reserve(worst)
+        try:
+            name, tokens = self.backend.open_cache(model, system, text)
+        except Exception:  # noqa: BLE001 - no cache only means each call sends the paper itself
+            self.ledger.settle(worst, self._row(step, doc, model, {}, 0.0))
+            return ""
+        self.ledger.settle(worst, self._row(step, doc, model, {"input": tokens},
+                                            tokens * p["input"] / 1e6))
+        self.held[name] = (tokens, time.time())
+        return name
+
+    def close_cache(self, name: str, step: str, doc: str = "_"):
+        """Delete a held document and pay for the time it was held."""
+        model = self.cfg["models"][step]
+        tokens, opened = self.held.pop(name)
+        self.backend.close_cache(name)
+        hours = (time.time() - opened) / 3600
+        usd = tokens * self.price(model).get("cache_hour", 0) * hours / 1e6
+        self.ledger.reserve(usd)
+        self.ledger.settle(usd, self._row(step, doc, model, {}, usd))
+
+    def call(self, step: str, prompt: str, schema: dict, system: str = "", doc: str = "_",
+             cache: str = ""):
         model = self.cfg["models"][step]
         thinking = self.cfg["thinking"][step]
         spend = self.cfg["spending"]
@@ -151,21 +207,26 @@ class LLM:
         p = self.price(model)
         # ~3 characters per token over-estimates English text: errs towards stopping early
         worst = (len(system + prompt) / 3 * p["input"] + max_out * p["output"]) / 1e6
+        held = {"cache": cache} if cache else {}
         self.ledger.reserve(worst)
         try:
             for attempt in range(3):
                 try:
                     text, usage, thoughts = self.backend.generate(
-                        model, system, prompt, schema, thinking, max_out, step=step)
+                        model, system, prompt, schema, thinking, max_out, step=step, **held)
                     break
                 except Exception as e:
-                    if getattr(e, "code", None) not in RETRY_CODES or attempt == 2:
+                    temporary = (getattr(e, "code", None) in RETRY_CODES
+                                 or "Timeout" in type(e).__name__)
+                    if not temporary or attempt == 2:
                         raise
                     time.sleep(2 ** (attempt + 2))
         except Exception:
             self.ledger.settle(worst, self._row(step, doc, model, {}, 0.0))
             raise
-        usd = (usage["input"] * p["input"] + (usage["output"] + usage["thoughts"]) * p["output"]) / 1e6
+        cached = usage.get("cached", 0)          # within input, at the price for cached tokens
+        usd = ((usage["input"] - cached) * p["input"] + cached * p.get("cached", p["input"])
+               + (usage["output"] + usage["thoughts"]) * p["output"]) / 1e6
         self.ledger.settle(worst, self._row(step, doc, model, usage, usd))
         if self.save:
             self._save(step, doc, model, system, prompt, schema, text, usage, usd, thoughts)

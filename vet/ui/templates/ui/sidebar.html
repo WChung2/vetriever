@@ -1,0 +1,85 @@
+{# fjkit:eject sidebar 0.4.1 macros:sidebar_trigger=06c578123165 #}
+{#
+  Ejected from fjkit 0.4.1: your copy of `sidebar_trigger`,
+  shadowing the kit's ui/sidebar.html. Edit it freely.
+
+  The other 5 macro(s) below are re-exported from the kit, and still get
+  its fixes. Call sites do not know the difference either way —
+  {% from "ui/sidebar.html" import … %} keeps working.
+
+  `fjkit check` names the macro when the kit's version of one you own moves on.
+  To take another macro, run `fjkit eject` again. It replaces that macro's re-export
+  line below and leaves the rest of this file as you have it. To give one back, put
+  `{% set <name> = _fjkit.<name> %}` where your copy was and drop `<name>=…` from the
+  stamp on line 1. To give all of them back, delete this file.
+#}
+{% import "fjkit/ui/sidebar.html" as _fjkit %}
+
+{#
+  The application shell's side column — 0.5's first piece.
+
+  A back office outgrows a header bar at about six destinations: the row runs
+  out of width, and grouping ("Workspace" / "Admin") has nowhere to live. That
+  is where an app without a sidebar component starts writing
+  `fixed inset-y-0 w-64 border-r` by hand, and the closed vocabulary is gone on
+  page one.
+
+  Basecoat already ships `.sidebar`: the CSS is in the stylesheet whether or
+  not anything renders it (CHARTER.md §4.1), and its JS is vendored. So this file
+  is not a new widget but the fjkit-shaped door onto one already paid for —
+  route names instead of hrefs, an icon by name, closed enumerations, and no
+  class string anywhere in the signature.
+
+  The markup contract belongs to Basecoat and is load-bearing:
+  `aside.sidebar > nav > {header, section, footer}`, `[role=group] > ul > li`,
+  and the next sibling of the aside is what gets the margin that keeps the page
+  clear of it. `ui/shell.html` owns that sibling; an app calls these macros
+  through the shell's `sidebar` block and never has to know.
+
+      {% block sidebar %}
+        {% set mark %}{{ brand("Acme", url_for(request, "home"), "gauge") }}{% endset %}
+        {% call sidebar(header=mark) %}
+          {% call sidebar_group("Workspace") %}
+            {{ sidebar_link(request, "home", "Overview", icon_name="gauge") }}
+          {% endcall %}
+        {% endcall %}
+      {% endblock %}
+#}
+{% from "ui/attrs.html" import attrs %}
+
+{% from "ui/icon.html" import icon %}
+
+{% set sidebar = _fjkit.sidebar %}
+
+{% set sidebar_group = _fjkit.sidebar_group %}
+
+{% set sidebar_link = _fjkit.sidebar_link %}
+
+{% set sidebar_item = _fjkit.sidebar_item %}
+
+{% set sidebar_submenu = _fjkit.sidebar_submenu %}
+
+{#
+  sidebar_trigger(target, label) — the button that collapses and reveals it.
+
+  The shell renders one when its `sidebar` block is filled. Call it yourself
+  only when you override the shell's header, or when your sidebar carries an id
+  other than the default.
+
+  `onclick` calls the method Basecoat's own script attached to the element —
+  the shape the theme toggle in `ui/nav.html` uses, and for the same reason:
+  the alternative is fjkit shipping a script of its own to bind one listener
+  (CHARTER.md §6), which costs a file and a load-order rule to save an
+  attribute. `aria-expanded` is deliberately absent: the script owns the open
+  state, so a value rendered here would be a second, stale copy.
+
+  The handler reads the id from `aria-controls` instead of having it written
+  into the script. Autoescape is an HTML escaper, and the browser undoes it
+  before a handler runs, so a quote in `target` would become code.
+#}
+{% macro sidebar_trigger(target="sidebar", label="Toggle navigation") -%}
+  <button class="btn" data-variant="ghost" data-size="icon-sm" type="button"
+          aria-label="{{ label }}" aria-controls="{{ target }}"
+          data-sidebar-toggle{# Vetriever: was an inline onclick; static/fj-ui.js does this #}
+    {%- if kwargs %}{{ attrs(kwargs) }}{% endif %}>{{ icon("panel-left", 16) }}</button>
+{%- endmacro %}

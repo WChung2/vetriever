@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from vet.codebook import TABLES, Codebook
+from vet.codebook import TABLES, Codebook, write_markdown, write_templates
 
 CB = Codebook()
 
@@ -37,13 +37,33 @@ def test_derived_fields_never_reach_templates():
 
 
 def test_topics_load_with_their_fields():
-    assert {"surgical_pain", "imha", "cie"} <= set(CB.topics)
+    examples = {"surgical_pain", "imha", "cie"}
+    assert examples <= set(CB.topics)
     for topic, fields in CB.topic_fields.items():
         assert CB.topics[topic].get("question"), topic
-        assert fields, topic
+        assert fields or topic not in examples, topic     # a search from the chat has none
         for f in fields.values():
             assert f.table == "topic_fields" and not f.applies, f"{topic}.{f.name}"
             assert f.name not in CB.columns("studies"), f"{topic}.{f.name} hides a core field"
+
+
+def test_a_search_from_the_chat_changes_no_published_file(tmp_path):
+    """codebook.md and templates/ go to GitHub: a local search must leave no trace in them."""
+    root = Path(__file__).parent.parent
+    for name in ("codebook.csv", "vocab/countries.txt", "topics/imha.toml"):
+        (tmp_path / name).parent.mkdir(exist_ok=True)
+        shutil.copy(root / name, tmp_path / name)
+
+    def published(folder):
+        cb = Codebook(tmp_path / "codebook.csv")
+        write_markdown(cb, tmp_path / f"{folder}.md")
+        write_templates(cb, tmp_path / folder)
+        return [(tmp_path / f"{folder}.md").read_text()] + [
+            p.read_text() for p in sorted((tmp_path / folder).glob("*"))]
+    before = published("before")
+    (tmp_path / "topics" / "a_private_question.toml").write_text('question = "private words"\n')
+    after = published("after")
+    assert after == before and "private" not in "".join(after)
 
 
 def test_a_broken_topic_file_is_refused(tmp_path):

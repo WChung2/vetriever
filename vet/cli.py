@@ -1,5 +1,6 @@
 """`vet <command>`: every step is its own command and can be re-run alone."""
 import argparse
+import json
 import sys
 import tempfile
 from collections import Counter
@@ -144,6 +145,19 @@ def cmd_fetch(args):
         print(f"{left} to download by hand: {folder / 'reports' / 'to_download.csv'}")
 
 
+def cmd_reread(args):
+    from .fetch import reread
+    from .requote import requote
+    folder = args.db.parent
+    done = reread(folder, args.db)
+    print(f"read {done['read']} stored PDFs and XML files: {done['changed']} texts changed (the "
+          f"earlier ones are in {folder / 'text_before'}), {done['flagged']} still flagged, "
+          f"{done['skipped']} skipped")
+    q = requote(args.db, folder)
+    print(f"quotes in the database: {q['realigned']} realigned to the new layout, {q['left']} still "
+          "not found (vet check lists them)")
+
+
 def cmd_who(args):
     from .who import institutions, who
     ids = _topic_ids(args)
@@ -185,17 +199,30 @@ def cmd_plan(args):
 
 
 def cmd_search(args):
-    from . import review
-    from .llm import LLM
+    from . import budget, review
+    from .llm import LLM, BudgetExceeded
     from .search import connect
+    from .settings import settings
     llm = LLM()
-    before = llm.ledger.spent
+    before, cap = llm.ledger.spent, llm.ledger.cap
+    db = connect(args.db)
+    if args.budget is not None or not budget.state(db, args.topic):
+        budget.set_budget(db, args.topic, args.budget or settings()["pipeline"]["search_budget"])
+    llm.ledger.cap = min(cap, llm.ledger.spent + budget.left(db, args.db.parent, args.topic))
+    step = review.widen if args.widen else review.carry_on
     try:
-        out = review.run(args.topic, llm, db=connect(args.db))
-    except ValueError as e:
+        out = step(args.topic, llm, db=db)
+    except (ValueError, BudgetExceeded) as e:
         sys.exit(str(e))
-    print(f"{out['kept']} records kept after {len(out['rounds'])} rounds; "
-          f"next: uv run vet list {args.topic}")
+    print(f"round {out['round']}: {out['new_kept']} new relevant records, {out['kept']} kept so far")
+    st = budget.state(db, args.topic)
+    if st["proposal"]:
+        print(f"round {st['next_round']} would:")
+        for line in budget.next_steps(json.loads(st["proposal"])["answer"]):
+            print(f"  {line}")
+        print(f"to run it: uv run vet search {args.topic} --widen")
+    print(f"to review what was found: uv run vet list {args.topic}")
+    llm.ledger.cap = cap
     print(_spent(llm, before))
 
 
@@ -340,6 +367,8 @@ def main(argv=None):
     f.add_argument("--from", dest="from_file", help="a file with one PMID or DOI per line")
     f.add_argument("--topic", help="fetch the topic's approved records; rank the rest for the vet")
     f.set_defaults(run=cmd_fetch)
+    sub.add_parser("reread", help="read the stored PDFs and XML again with the current readers (free, "
+                                  "local)").set_defaults(run=cmd_reread)
     w = sub.add_parser("who", help="step 7: authors and institutions from OpenAlex (free)")
     w.add_argument("ids", nargs="*", help="PMIDs or DOIs")
     w.add_argument("--from", dest="from_file", help="a file with one PMID or DOI per line")
@@ -361,8 +390,11 @@ def main(argv=None):
     pl.add_argument("--answers", type=Path, help="the vet's answers to the last round")
     pl.add_argument("--start", action="store_true", help="write the topic file from the last round")
     pl.set_defaults(run=cmd_plan)
-    se = sub.add_parser("search", help="steps 2-5: search, screen and review until nothing new (paid)")
+    se = sub.add_parser("search", help="steps 2-5: one round of search and screening, then stop: "
+                        "widening is your decision (paid)")
     se.add_argument("topic")
+    se.add_argument("--budget", type=float, help="what this search may spend, in USD")
+    se.add_argument("--widen", action="store_true", help="run the proposed next round")
     se.set_defaults(run=cmd_search)
     ls = sub.add_parser("list", help="step 6: the kept list for the vet; --approve-all approves it")
     ls.add_argument("topic")

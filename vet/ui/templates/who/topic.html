@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% from "topics/macros.html" import topic_header %}
+{% from "ui/layout.html" import stack %}
+{% from "ui/data.html" import caption %}
+{% block title %}{{ s.title }} · who & where{% endblock %}
+{% block content %}
+{{ topic_header(name, s, "who", counts) }}
+{% call stack(gap=4) %}
+  {{ caption("Institutions that led this search's approved papers (a first or last author there), from OpenAlex author records.", tone=none) }}
+  {% set topic = name %}{% include "who/_table.html" %}
+{% endcall %}
+{% endblock %}

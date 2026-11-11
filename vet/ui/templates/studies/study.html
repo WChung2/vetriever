@@ -1,0 +1,123 @@
+{#- One study: what it is, who ran it where, its criteria, and everything read from the paper. -#}
+{% extends "base.html" %}
+{% from "ui/layout.html" import stack, row, grid, page_header, section %}
+{% from "ui/data.html" import card, badge, caption, link, description_list, description_item, item, item_list %}
+{% from "ui/disclosure.html" import collapsible %}
+{% from "ui/table.html" import table, cell %}
+{% block title %}{{ s.ID }}{% endblock %}
+{% macro quotes(list) %}
+  {% if list %}
+  {% call collapsible("Source text") %}
+    {% for q in list %}{% if q.quote %}<blockquote>{{ q.quote }}</blockquote>{{ caption(q.location ~ ((" · " ~ q.source_id) if q.source_id else "")) }}{% endif %}{% endfor %}
+  {% endcall %}
+  {% endif %}
+{% endmacro %}
+{% macro results_table(rows) %}
+  {% call table([{"label": "Arm"}, {"label": "Measure"}, {"label": "When"}, {"label": "n"}, {"label": "Events"}, {"label": "Value"}, {"label": "p"}, {"label": "Read from"}], rows=rows) %}
+    {% for r in rows %}
+    <tr>
+      {{ cell(r.arm) }}
+      {% call cell() %}{{ r.endpoint }}{% if r.subgroup %}{{ caption(r.subgroup) }}{% endif %}{% endcall %}
+      {{ cell(r.timepoint_as_written or (r.timepoint_value ~ " " ~ r.timepoint_unit if r.timepoint_value else "")) }}
+      {{ cell(r.n, numeric=true) }}
+      {{ cell(r.events, numeric=true) }}
+      {% call cell(numeric=true) %}{% if r.value %}{{ r.value }}{% if r.value_unit %} {{ r.value_unit }}{% endif %}
+        {% if r.statistic_type %}{{ caption(r.statistic_type | label) }}{% endif %}
+        {% if r.variability_low or r.variability_high %}{{ caption(r.variability_low ~ "–" ~ r.variability_high) }}{% elif r.variability_value %}{{ caption("± " ~ r.variability_value) }}{% endif %}{% endif %}{% endcall %}
+      {{ cell(r.p_value, numeric=true) }}
+      {% call cell() %}{% if r.as_written %}{% call collapsible(r.location or "text") %}<blockquote>{{ r.as_written }}</blockquote>{% endcall %}{% endif %}{% endcall %}
+    </tr>
+    {% endfor %}
+  {% endcall %}
+{% endmacro %}
+{% block content %}
+{{ page_header(s.title or s.ID, s.ID ~ ((" · " ~ (s.topics | join(" · "))) if s.topics else "")) }}
+{% call stack(gap=6) %}
+  {% call row(gap=2) %}
+    {% for t in s.topics %}{{ link(t, "/topics/" ~ t ~ "/studies") }} /{% endfor %} {{ s.ID }}
+  {% endcall %}
+  {% call row(gap=2) %}
+    {% if s.status %}{{ badge((s.status or "") | lower | label, "outline") }}{% endif %}
+    {% if s.species %}{{ badge(s.species, "outline") }}{% endif %}
+    {% if s.main.year %}{{ badge(s.main.year, "ghost") }}{% endif %}
+    {{ badge(kinds.get(s.study_kind, s.study_kind | label), "secondary") }}
+    {% if s.n_enrolled %}{{ badge(s.n_enrolled ~ " enrolled", "secondary") }}{% endif %}
+    {% if s.main.access == "abstract_only" %}{{ badge("abstract only", "warning", title="Only the abstract was available: values are from the abstract") }}{% endif %}
+  {% endcall %}
+
+  {% call grid(cols=3, gap=4) %}
+    {% call card(title="Classification") %}
+      {% call description_list(layout="stacked") %}
+        {% if s.condition %}{{ description_item("Condition", s.condition | replace("|", ", ")) }}{% endif %}
+        {% if s.intervention %}{{ description_item("Intervention", s.intervention) }}{% endif %}
+        {{ description_item("Design", kinds.get(s.study_kind, s.study_kind | label) ~ ((" · " ~ (s.study_type | lower)) if s.study_type else "")) }}
+        {% if s.country %}{{ description_item("Country", s.country | replace("|", ", ")) }}{% endif %}
+        {{ description_item("Sponsor", (s.sponsor | replace("|", ", ")) or "not stated") }}
+        {% if s.primary_outcome %}{{ description_item("Primary outcome", s.primary_outcome) }}{% endif %}
+      {% endcall %}
+    {% endcall %}
+    {% call card(title="Sites") %}
+      {% if s.sites %}
+        {% call item_list() %}{% for x in s.sites[:12] %}{{ item(x.Facility or "—", [x.City, x.Country] | select | join(", "), clamp=false) }}{% endfor %}{% endcall %}
+        {% if s.sites | length > 12 %}{{ caption("+ " ~ (s.sites | length - 12) ~ " more") }}{% endif %}
+      {% else %}{{ caption("No site on file.") }}{% endif %}
+    {% endcall %}
+    {% call card(title="KOLs") %}
+      {% call stack(gap=3) %}
+      {% if s.kols %}
+        {% call item_list() %}{% for pp in s.kols %}{{ item(pp.Name, pp.why ~ (" · corresponding" if pp.is_corresponding == "yes" else "") ~ ((" · " ~ (pp.Affiliation | truncate(70, True, "…"))) if pp.Affiliation else ""), clamp=false) }}{% endfor %}{% endcall %}
+      {% else %}{{ caption("No first or last author on file.") }}{% endif %}
+      {% if s.others %}{% call collapsible((s.others | length) ~ " other author" ~ ("" if s.others | length == 1 else "s")) %}{{ caption(s.others | map(attribute="Name") | join(", ")) }}{% endcall %}{% endif %}
+      {{ caption("A paper's first and last authors usually lead it; for a trial, its study director.") }}
+      {% endcall %}
+    {% endcall %}
+  {% endcall %}
+
+  {% if s.summary %}{% call collapsible("Study description") %}<p>{{ s.summary }}</p>{% endcall %}{% endif %}
+
+  {% if s.inclusion or s.exclusion %}
+  {% call grid(cols=2, gap=4) %}
+    {% call card(title="Inclusion criteria") %}{% call stack(gap=1) %}{% for line in (s.inclusion or "none listed").split("\n") %}<p>{{ line }}</p>{% endfor %}{% endcall %}{% endcall %}
+    {% call card(title="Exclusion criteria") %}{% call stack(gap=1) %}{% for line in (s.exclusion or "none listed").split("\n") %}<p>{{ line }}</p>{% endfor %}{% endcall %}{% endcall %}
+  {% endcall %}
+  {% endif %}
+
+  {% call row(gap=4) %}
+  {% for so in s.sources %}
+    {% if so.pmid %}{{ link("Open on PubMed ↗", "https://pubmed.ncbi.nlm.nih.gov/" ~ so.pmid ~ "/", target="_blank", rel="noopener noreferrer") }}{% endif %}
+    {% if so.doi %}{{ link("Open the paper ↗", "https://doi.org/" ~ so.doi, target="_blank", rel="noopener noreferrer") }}{% endif %}
+  {% endfor %}
+  {% endcall %}
+
+  {% call section(title="More from the paper") %}
+    {% call collapsible("Arms & doses (" ~ (s.arms | length) ~ ")") %}
+      {% call grid(cols=2, gap=3) %}
+      {% for a in s.arms %}
+        {% call card(title=a.arm_label or a.arm_id, description=((a.n_assigned ~ " assigned") if a.n_assigned else "") ~ ((" · " ~ a.n_analysed ~ " analysed") if a.n_analysed else "")) %}
+          {% call stack(gap=2) %}
+          {% if a.is_control == "yes" %}{{ badge("control", "secondary") }}{% endif %}
+          {% if a.doses %}<ul>{% for d in a.doses %}<li><b>{{ d.drug }}</b> {{ d.dose_value }}{% if d.dose_value_max %}–{{ d.dose_value_max }}{% endif %} {{ d.dose_unit }}{% if d.route %} · {{ d.route | replace("|", " or ") }}{% endif %}{% if d.frequency %} · {{ d.frequency }}{% endif %}{% if d.dose_duration %} · {{ d.dose_duration }}{% endif %}</li>{% endfor %}</ul>{% endif %}
+          {{ quotes(a.quotes) }}
+          {% endcall %}
+        {% endcall %}
+      {% endfor %}
+      {% endcall %}
+    {% endcall %}
+    {% for kind, title in [("outcome", "Outcomes"), ("adverse_event", "Adverse events"), ("baseline", "Baseline (at entry)")] %}
+      {% call collapsible(title ~ " (" ~ (s.results[kind] | length) ~ ")") %}
+        {% if s.results[kind] %}{{ results_table(s.results[kind]) }}{% else %}{{ caption("None stored.") }}{% endif %}
+      {% endcall %}
+    {% endfor %}
+    {% call collapsible("Every extracted field, with its source text (" ~ (s.fields | length) ~ ")") %}
+      {% call description_list() %}
+      {% for f in s.fields %}
+        {% call description_item(f.name | label) %}{{ f.value | replace("|", ", ") | plain }}{{ quotes(f.quotes) }}{% endcall %}
+      {% endfor %}
+      {% endcall %}
+    {% endcall %}
+    {% call collapsible("Sources (" ~ (s.sources | length) ~ ")") %}
+      {% call item_list() %}{% for so in s.sources %}{{ item(so.title, so.role ~ " · " ~ (so.doc_type | label) ~ ((" · " ~ so.year) if so.year else "") ~ " · " ~ (so.access | label), clamp=false) }}{% endfor %}{% endcall %}
+    {% endcall %}
+  {% endcall %}
+{% endcall %}
+{% endblock %}

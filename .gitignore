@@ -20,6 +20,12 @@ decisions.md
 # Outputs from other tools kept for comparison (full texts and extracted data): local only
 examples/
 
+# A search asked in the chat holds what the vet typed: local only. The example topics are public
+topics/*.toml
+!topics/cie.toml
+!topics/imha.toml
+!topics/surgical_pain.toml
+
 # No data goes to GitHub, wherever it is saved: databases, spreadsheets, documents
 *.db
 *.sqlite

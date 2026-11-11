@@ -1,0 +1,62 @@
+{#- One record: what it is, why the screening decided as it did, and the vet's decision. -#}
+{% from "ui/layout.html" import stack, row %}
+{% from "ui/data.html" import card, badge, caption, link %}
+{% from "ui/disclosure.html" import collapsible %}
+{% from "ui/button.html" import button %}
+{% macro act(action, label, variant="") %}
+<form method="post" action="/topics/{{ name }}/decide" hx-post="/topics/{{ name }}/decide"
+      hx-target="closest article" hx-swap="outerHTML">
+  <input type="hidden" name="csrf" value="{{ token }}">
+  <input type="hidden" name="key" value="{{ r.key }}">
+  <input type="hidden" name="action" value="{{ action }}">
+  {{ button(label, type="submit", variant=variant, size="sm") }}
+</form>
+{% endmacro %}
+{% set actions %}
+  {% call row(gap=2) %}
+  {% if r.approved %}
+    {{ badge("✓ approved" ~ (" (kept anyway)" if r.decision == "off_topic" else ""), "success", title="Approved " ~ (r.approved | day)) }}{{ act("undo", "undo", "link") }}
+  {% elif r.rejected %}
+    {{ badge("✗ rejected", "destructive", title="Rejected " ~ (r.rejected | day)) }}{{ act("undo", "undo", "link") }}
+  {% elif r.decision == "keep" %}
+    {{ act("approve", "Approve") }}{{ act("reject", "Reject", "outline") }}
+  {% elif r.decision == "off_topic" %}
+    {{ act("approve", "Keep anyway", "outline") }}
+  {% elif r.decision == "lead" %}
+    {{ caption("overview · background") }}
+  {% endif %}
+  {% endcall %}
+{% endset %}
+<article id="r-{{ r.key | replace(':', '-') | replace('/', '-') | replace('.', '-') }}" data-decision="{{ r.decision }}">
+{% call card(title=r.title, actions=actions) %}
+  {% call stack(gap=3) %}
+    {% call row(gap=2) %}
+      {% if r.confidence %}{{ badge(level_names[r.confidence], {"high": "success", "medium": "warning", "low": "outline"}[r.confidence], title=r.confidence_why) }}{% endif %}
+      {% if r.year %}{{ badge(r.year, "ghost") }}{% endif %}
+      {% if r.journal %}{{ caption(r.journal) }}{% endif %}
+      {% if r.decision == "lead" %}{{ badge("Overview", "info") }}
+      {% elif r.design %}{{ badge(designs.get(r.design, r.design | label), "secondary") }}{% endif %}
+      {% for f in r.flags %}{{ badge(flag_names.get(f, f | label), "warning") }}{% endfor %}
+      {% for w in r.names[:3] %}{{ badge(w, "primary", title="a treatment from your question") }}{% endfor %}
+    {% endcall %}
+    {% if r.summary %}<p>{{ r.summary }}</p>{% endif %}
+    {% call collapsible("Why the screening " ~ ("dropped it" if r.decision == "off_topic" else ("set it aside" if r.decision == "aside" else ("marked it an overview" if r.decision == "lead" else "kept it"))) ~ ", and how it was found") %}
+      {% call stack(gap=2) %}
+      {% if r.rule %}<p><b>Dropped:</b> {{ rules.get(r.rule, r.rule) }}</p>{% endif %}
+      {% if r.confidence %}<p>Confidence <b>{{ r.confidence }}</b>: {{ r.confidence_why }}</p>{% endif %}
+      {% if r.reasoning %}<p>{{ r.reasoning }}</p>{% endif %}
+      {% for check, answer, quote in r.checks %}
+        <p>{{ check_names.get(check, check) }}: <b>{{ answer_names.get(answer, answer | label) }}</b>{% if quote %} <q>{{ quote }}</q>{% endif %}</p>
+      {% endfor %}
+      {% if r.decision == "aside" %}<p>Letters, comments and errata are set aside before screening.</p>{% endif %}
+      {% if r.found_by %}{{ caption("Found by " ~ (r.found_by | join("; "))) }}{% endif %}
+      {{ caption(r.key ~ ((" · PMID " ~ r.pmid) if r.pmid else "") ~ ((" · " ~ r.doi) if r.doi else "")) }}
+      {% endcall %}
+    {% endcall %}
+    {% call row(gap=4) %}
+      {% if r.pmid %}{{ link("PubMed ↗", "https://pubmed.ncbi.nlm.nih.gov/" ~ r.pmid ~ "/", target="_blank", rel="noopener noreferrer") }}{% endif %}
+      {% if r.doi %}{{ link("DOI ↗", "https://doi.org/" ~ r.doi, target="_blank", rel="noopener noreferrer") }}{% endif %}
+    {% endcall %}
+  {% endcall %}
+{% endcall %}
+</article>

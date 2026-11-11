@@ -1,0 +1,8 @@
+{#- A step at work: polled every two seconds; the reply tells the page to reload when it ends. -#}
+{% from "ui/data.html" import card, caption %}
+{% from "ui/layout.html" import stack %}
+<div id="now" role="status" hx-get="/topics/{{ name }}/live" hx-trigger="every 2s" hx-swap="outerHTML">
+{% call card(title=p.job.kind ~ " running…", description="You can use the other pages meanwhile.") %}
+  {% call stack(gap=1) %}{% for line in lines %}{{ caption(line) }}{% endfor %}{% endcall %}
+{% endcall %}
+</div>

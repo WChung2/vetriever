@@ -1,0 +1,46 @@
+{#- What every page of one search shares: its header with the tabs, and how far it has come. -#}
+{% from "ui/layout.html" import grid, page_header, section %}
+{% from "ui/data.html" import badge, description_list, description_item, stat %}
+{% from "ui/disclosure.html" import collapsible %}
+{% from "ui/button.html" import button, button_group %}
+
+{% macro counted(label, n) %}{{ label }} {{ badge(n | thousands, "secondary") }}{% endmacro %}
+
+{% macro topic_header(name, s, tab, counts) %}
+{% call page_header(s.title, s.status) %}
+  <nav aria-label="This search">
+  {% call button_group() %}
+    {% for key, label, href, n in [
+        ("chat", "Chat", "/topics/" ~ name ~ "/chat#now", none),
+        ("review", "Review", "/topics/" ~ name ~ "/review", counts.to_review or none),
+        ("studies", "Studies", "/topics/" ~ name ~ "/studies", counts.studies),
+        ("who", "Who & where", "/topics/" ~ name ~ "/who", none)] %}
+      {% set text = counted(label, n) if n is not none else label %}
+      {% if key == tab %}{{ button(text, href=href, variant="secondary", aria_current="page") }}
+      {% else %}{{ button(text, href=href, variant="ghost") }}{% endif %}
+    {% endfor %}
+  {% endcall %}
+  </nav>
+{% endcall %}
+{% endmacro %}
+
+{% macro funnel(c) %}
+{% call section(title="How far this search has come") %}
+  {% call grid(cols=3, gap=3) %}
+    {{ stat("Found", c.found | thousands, "articles the search turned up") }}
+    {{ stat("Kept by screening", c.keep | thousands, "on topic, judged from the abstract") }}
+    {{ stat("Approved by you", c.approved | thousands, "in your review" ~ (("; " ~ (c.to_review | thousands) ~ " still to review") if c.to_review else "")) }}
+    {{ stat("Full text", c.full_text | thousands, "approved articles downloaded") }}
+    {{ stat("In the database", c.studies | thousands, "studies read in, every value cited") }}
+  {% endcall %}
+  {% call collapsible("What do these numbers mean?") %}
+    {% call description_list() %}
+      {{ description_item("Found", "Every article the search turned up: the PubMed and Europe PMC searches, then the search rounds that widen it (following the references and citations of key articles, adding missed terms). Duplicates are merged. At this point only the title and abstract are known.") }}
+      {{ description_item("Kept by screening", "Articles the model judged on topic from the title and abstract: the right animals with the condition (or a related one), or healthy animals given a treatment of interest. When unsure, it keeps the article. Of the rest, " ~ (c.off_topic | thousands) ~ " were dropped (each with its reason and the sentence it rests on; you can still keep one in your review), " ~ (c.lead | thousands) ~ " are overviews and guidelines (not studies: used to find more studies), and " ~ (c.aside | thousands) ~ " are letters, comments and errata.") }}
+      {{ description_item("Approved by you", "Your review: the articles you decided should be read in full" ~ ((", after rejecting " ~ (c.rejected | thousands)) if c.rejected else "") ~ ". Only approved articles go further.") }}
+      {{ description_item("Full text", "Approved articles whose full text could be downloaded legally (open access, PubMed Central, or publisher access). The others are read from their abstract, or you download the most important ones by hand.") }}
+      {{ description_item("In the database", "Articles the model has read into the database: one study each (two articles about the same trial become one), with its arms, doses and outcomes, every value with the sentence it came from.") }}
+    {% endcall %}
+  {% endcall %}
+{% endcall %}
+{% endmacro %}

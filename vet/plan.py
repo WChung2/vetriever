@@ -21,7 +21,8 @@ from datetime import date, datetime
 from pathlib import Path
 
 from . import connectors as c
-from .search import bad_term_check, connect, pubmed_term, query
+from .screen import HEALTHY
+from .search import _query, bad_term_check, connect, dated, pubmed_term, query
 from .settings import CORPUS, ROOT, settings
 from .validate import _flat
 
@@ -38,7 +39,7 @@ def _items() -> dict:
 
 SCHEMA = {"type": "object", "required": ["reasoning", "restatement", "species", "condition",
                                          "blocks", "related", "treatments", "targets",
-                                         "questions"],
+                                         "healthy_treated", "questions"],
           "properties": {
               "reasoning": {"type": "string"},
               "restatement": {"type": "string"},
@@ -55,12 +56,20 @@ SCHEMA = {"type": "object", "required": ["reasoning", "restatement", "species", 
                                          "source": {"type": "string", "enum": SOURCES},
                                          "evidence": {"type": "string"}}}}}}},
               "related": _items(), "treatments": _items(), "targets": _items(),
+              "healthy_treated": {
+                  "type": "object", "required": ["value", "source", "evidence"],
+                  "description": "Follow the section 'Healthy or research animals'.",
+                  "properties": {"value": {"type": "string", "enum": list(HEALTHY)},
+                                 "source": {"type": "string", "enum": SOURCES},
+                                 "evidence": {"type": "string"}}},
               "questions": {"type": "array", "items": {
                   "type": "object", "required": ["question", "options"],
                   "properties": {"question": {"type": "string"},
                                  "options": {"type": "array", "items": {"type": "string"}}}}}}}
 SHOWN_BEST, SHOWN_RANDOM = 5, 2        # papers shown: PubMed's best matches, then a random pick
 NOTE = "The vet adds"                  # free text typed beside the Planner's questions
+OWN_MAX = 300                          # the vet's own words under one question, at most
+HEALTHY_Q = "Should the database include studies of healthy or research"   # prompts/plan.md's wording
 NONE_NAMED = ["none named"]            # a screening slot the vet's question leaves empty
 COMMON = {"a", "an", "and", "are", "at", "by", "can", "do", "does", "for", "from", "how", "in",
           "into", "is", "it", "of", "on", "or", "our", "should", "the", "to", "was", "we", "were",
@@ -127,6 +136,19 @@ def check_source(item: dict, term: str, words: str, marked: dict, answers: str) 
     return ""
 
 
+def check_healthy(h, words: str, marked: dict, answers: str) -> dict:
+    """The draft's healthy_treated as code accepts it: a listed value, and a source that holds
+    (else a suggestion, with why); missing or unreadable, include as a suggestion."""
+    h = h if isinstance(h, dict) else {}
+    out = {"value": h.get("value") if h.get("value") in HEALTHY else "include",
+           "source": h.get("source") if h.get("source") in SOURCES else "suggestion",
+           "evidence": str(h.get("evidence") or "").strip()}
+    if h.get("value") not in HEALTHY:
+        return out | {"source": "suggestion", "note": "not given: kept, as before"}
+    note = check_source(out, out["evidence"], words, marked, answers)
+    return out | ({"source": "suggestion", "note": note} if note else {})
+
+
 def check(draft: dict, words: str, marked: dict, answers: str, http: c.Http) -> dict:
     """The draft as code accepts it: terms with sources checked, MeSH verified and expanded,
     hit counts; every change is noted."""
@@ -161,6 +183,9 @@ def check(draft: dict, words: str, marked: dict, answers: str, http: c.Http) -> 
         for it in draft[part]:
             note = check_source(it, it["item"], words, marked, answers)
             out[part].append(it | ({"source": "suggestion", "note": note} if note else {}))
+    out["healthy_treated"] = check_healthy(draft.get("healthy_treated"), words, marked, answers)
+    if out["healthy_treated"]["source"] != "suggestion":    # settled by the vet: never asked
+        out["questions"] = [q for q in out["questions"] if not q["question"].startswith(HEALTHY_Q)]
     blocks = {t["block"] for t in terms}
     for need in ("species", "condition"):
         if need not in blocks:
@@ -188,8 +213,8 @@ def count_hits(terms: list[dict], http: c.Http, problems: list[str]) -> dict:
     good = [t for t in terms if t["hits"] is not None]
     for t in good:
         others = [o for o in good if o["block"] != t["block"]]
-        t["hits"] = c.pubmed_search(http, pubmed_term(t) + (" AND " + query(others) if others
-                                                           else ""), limit=0)[0]
+        t["hits"] = c.pubmed_search(http, dated(pubmed_term(t) + (" AND " + _query(others)
+                                                                 if others else "")), limit=0)[0]
     return {"hits": c.pubmed_search(http, query(good), limit=0)[0]}
 
 
@@ -322,12 +347,17 @@ def run_round(topic: str, llm, http: c.Http, words: str = "", answers_file: Path
 
 def answers_from(state: dict, get) -> dict:
     """The chat form's answers, in the shape of an answers file. `get(field)` reads the form.
-    Questions and papers come from the saved round: a form can only pick what was offered."""
+    Questions and papers come from the saved round: a form can only pick what was offered.
+    Under each question the vet may also type their own answer or a detail (q<i>_own: "the
+    drug's name"), kept with the option picked, or alone when none fits."""
     last = state["rounds"][-1]
     asked = []
     for i, q in enumerate(last["checked"].get("questions", [])):
-        if get(f"q{i}") in q["options"]:
-            asked.append({"question": q["question"], "answer": get(f"q{i}")})
+        picked = get(f"q{i}") if get(f"q{i}") in q["options"] else ""
+        own = " ".join(get(f"q{i}_own").split())[:OWN_MAX]
+        answer = f"{picked}: {own}" if picked and own else picked or own
+        if answer:
+            asked.append({"question": q["question"], "answer": answer})
     note = " ".join(get("note").split())[:2000]
     if note:
         asked.append({"question": NOTE, "answer": note})
@@ -368,6 +398,10 @@ def write_for_vet(topic: str, state: dict, last: int):
     for part in ("related", "treatments", "targets"):
         out += ["", f"**{part.capitalize()}:** " + "; ".join(
             f"{i['item']} ({i['source']}{': ' + i['note'] if i.get('note') else ''})" for i in ch[part])]
+    h = ch.get("healthy_treated")
+    if h:
+        why = (": " + h["evidence"] if h["evidence"] else "") + ("; " + h["note"] if h.get("note") else "")
+        out += ["", f"**Healthy or research animals given a treatment:** {h['value']} ({h['source']}{why})"]
     if state.get("known"):
         out += ["", "**Papers you know:** " + ", ".join(
             f"{k} {'found' if v else 'NOT FOUND'}" for k, v in state.get("known_found", {}).items())]
@@ -450,7 +484,8 @@ def start(topic: str) -> Path:
              f"species = {_toml(ch['species'])}", f"condition = {_toml(ch['condition'])}",
              f"also_called = {_toml(also or NONE_NAMED)}",
              f"related = {_toml([i['item'] for i in ch['related']] or NONE_NAMED)}",
-             f"treatments = {_toml([i['item'] for i in ch['treatments']] or NONE_NAMED)}", ""]
+             f"treatments = {_toml([i['item'] for i in ch['treatments']] or NONE_NAMED)}",
+             f"healthy_treated = {_toml(ch.get('healthy_treated', {}).get('value', 'include'))}", ""]
     for t in ch["terms"]:
         lines += ["[[terms]]"] + [f"{k} = {_toml(t[k])}" for k in ("block", "kind", "term",
                                                                    "source", "evidence")] + [""]

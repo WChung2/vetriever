@@ -15,7 +15,7 @@ from pathlib import Path
 from . import budget
 from . import chat as chatdb
 from .approve import DESIGN_ORDER
-from .screen import confidence
+from .screen import confidence, considered, healthy_setting
 from .settings import CORPUS, ROOT, settings
 from .who import rank
 
@@ -31,12 +31,25 @@ VIEWS = {"to_review": "s.decision = 'keep' AND s.approved = '' AND {rej} = ''",
          "aside": "s.decision = 'aside'"}
 RULES = {"O1": "it studies only other species, or people",
          "O2": "the condition is only background, not studied",
-         "O3": "no animals were studied (laboratory work or an induced model)"}
+         "O3": "no animals were studied (laboratory work or an induced model)",
+         # set aside before screening (search.aside_why)
+         "same_paper": "A paper found twice, under two records, is screened once.",
+         "too_old": "Papers published before the search's first year are set aside before screening.",
+         "no_year": "A record with no year, no abstract or no journal holds too little to judge, "
+                    "so it is set aside before screening.",
+         "no_abstract": "A record with no year, no abstract or no journal holds too little to "
+                        "judge, so it is set aside before screening.",
+         "not_journal": "Preprints, theses, book chapters and congress abstracts are not papers in "
+                        "a journal; they are set aside before screening."}
 FLAGS = {"related_condition": "related condition", "research_animals": "healthy dogs treated",
          "survey": "survey", "single_case": "single case", "title_only": "no abstract",
          "unbacked_drop": "kept: no quote for its drop", "not_answered": "kept: not answered"}
 PER_PAGE = 50
 LEVELS = ("high", "medium", "low")
+CONSIDERED = "considered"
+HEALTHY_NAMES = {"include": "healthy or research {} given a treatment: included",
+                 "exclude": "healthy or research {} given a treatment: left out",
+                 "not_applicable": "healthy or research {}: not applicable, no treatment"}     # approve all at once: high, and healthy animals given a treatment
 SHOWN_EVENTS = {"failed", "interrupted", "stopped"}     # what stays in the chat from a job
 
 
@@ -150,7 +163,8 @@ def records(db: Path, name: str, view: str = "to_review", q: str = "", flag: str
             design: str = "", page: int = 1, level: str = "") -> dict:
     """One page of a list of the Review step, ranked (`_rank`), with the filters' choices and
     every list's count."""
-    words = treatment_words(topic_file(name))
+    t = topic_file(name)
+    words, healthy = treatment_words(t), healthy_setting(t)
     view = view if view in VIEWS else "to_review"
     level = level if level in LEVELS else ""
     page = max(1, page)
@@ -181,7 +195,7 @@ def records(db: Path, name: str, view: str = "to_review", q: str = "", flag: str
         if design:
             where.append("s.design = ?")
             args.append(design)
-        rows = sorted((_record(r, words) for r in con.execute(
+        rows = sorted((_record(r, words, healthy) for r in con.execute(
             SELECT.format(rej=_rej(con)) + f" WHERE s.topic = ? AND {' AND '.join(where)}", args)),
             key=_rank)
         for r in rows:
@@ -227,34 +241,38 @@ def record(db: Path, name: str, key: str) -> dict | None:
     try:
         r = con.execute(SELECT.format(rej=_rej(con)) + " WHERE s.topic = ? AND s.key = ?",
                         (name, key)).fetchone()
-        return (_record(r, treatment_words(topic_file(name)))
+        t = topic_file(name)
+        return (_record(r, treatment_words(t), healthy_setting(t))
                 | {"found_by": _found_by(con, name, [key]).get(key, [])}) if r else None
     finally:
         con.close()
 
 
 def keys_in(db: Path, name: str, view: str, level: str = "") -> list[str]:
-    """Every record of one list of the Review step, or of one confidence level in it (to
-    approve or undo them all at once)."""
-    topic_file(name)
+    """Every record of one list of the Review step, or of one confidence level in it, or those
+    worth considering (CONSIDERED), to approve or undo them all at once."""
+    healthy = healthy_setting(topic_file(name))
     con = read_only(db)
     try:
         rows = con.execute(SELECT.format(rej=_rej(con)) + f" WHERE s.topic = ? AND "
                            f"{_view(con, view)}", (name,)).fetchall()
+        if level == CONSIDERED:
+            return [r["key"] for r in rows if _record(r, (), healthy)["considered"]]
         return [r["key"] for r in rows if not level or _record(r)["confidence"] == level]
     finally:
         con.close()
 
 
-def _record(r, words: list[str] = ()) -> dict:
+def _record(r, words: list[str] = (), healthy: str = "include") -> dict:
     a = json.loads(r["answers"] or "{}")
     flags = [f for f in (r["flags"] or "").split("|") if f]
     text = " ".join(r[k] or "" for k in ("title", "abstract", "mesh"))
     sure, why = confidence(a, flags, text) if r["decision"] == "keep" else ("", "")
+    worth = r["decision"] == "keep" and considered(a, flags, text, healthy)
     low = text.lower()
     return {"key": r["key"], "decision": r["decision"], "rule": r["rule"],
             "rule_text": RULES.get(r["rule"], ""), "flags": flags,
-            "confidence": sure, "confidence_why": why,
+            "confidence": sure, "confidence_why": why, "considered": worth,
             "names": [w for w in words if w in low] if sure else [],
             "summary": r["summary"] or "", "design": r["design"] or "",
             "approved": r["approved"] or "", "rejected": r["rejected"] or "",
@@ -561,6 +579,11 @@ def history(db: Path, corpus: Path, name: str) -> list[dict]:
         for group in ("related", "treatments", "targets"):
             chips += [{"item": x["item"], "source": x.get("source", ""), "group": group}
                       for x in ch.get(group, [])]
+        h = ch.get("healthy_treated")
+        if h:                                     # one line: whether these studies are kept
+            chips.append({"item": HEALTHY_NAMES[h["value"]].format(ch.get("species") or "animals")
+                          + (f" (“{h['evidence']}”)" if h["source"] == "vet" and h["evidence"] else ""),
+                          "source": h["source"], "group": "healthy_treated"})
         items.append({"who": "planner", "kind": "round", "n": r["n"], "time": r.get("time", ""),
                       "restatement": ch.get("restatement", ""), "chips": chips,
                       "terms": ch.get("terms", []), "hits": ch.get("hits"),
@@ -606,7 +629,7 @@ def history(db: Path, corpus: Path, name: str) -> list[dict]:
             if "topic_log" in have:
                 for rnd, what, n in con.execute(
                         "SELECT round, what, COUNT(*) FROM topic_log WHERE topic = ? "
-                        "GROUP BY round, what", (name,)):
+                        "AND outcome NOT LIKE 'not run:%' GROUP BY round, what", (name,)):
                     log.setdefault(rnd, {})[what] = n
             for rnd, d in rounds.items():
                 screened = sum(d.values())
@@ -629,7 +652,7 @@ def history(db: Path, corpus: Path, name: str) -> list[dict]:
             if aside:
                 items.append({"who": "event", "kind": "progress", "time": "",
                               "text": f"{_n(aside, 'record')} set aside without screening "
-                                      "(letters, comments, errata)"})
+                                      "(letters and errata, second copies, too little to judge, older papers)"})
             if rounds and not timed:          # a search from before the vet decided each round
                 items.append({"who": "event", "kind": "done", "time": "",
                               "text": "Search finished", "cost": cost["screen"] + cost["review"]})

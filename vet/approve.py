@@ -45,7 +45,7 @@ def write_list(name: str, db: sqlite3.Connection, folder: Path) -> tuple[Path, P
     more = [f"# {name}: reasoning and flags, and the dropped records", ""]
     for title, where in (("Kept", "s.decision IN ('keep', 'lead')"),
                          ("Dropped", "s.decision = 'off_topic'"),
-                         ("Set aside (letters, comments, errata)", "s.decision = 'aside'")):
+                         ("Set aside (letters and errata, second copies, too little to judge, older papers)", "s.decision = 'aside'")):
         rows = _rows(db, name, where)
         more += [f"## {title} ({len(rows)})", ""]
         for r in rows:

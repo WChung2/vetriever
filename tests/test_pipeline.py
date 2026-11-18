@@ -7,7 +7,7 @@ import tomllib
 import pytest
 
 from tests.literature import Literature, rec
-from vet import approve, budget, plan, review
+from vet import approve, budget, plan, review, views
 from vet import connectors as c
 from vet import search as s
 from vet.llm import LLM, FakeGemini
@@ -58,10 +58,10 @@ def pipeline_settings(monkeypatch):
 
 def test_query_is_or_inside_blocks_and_between_them():
     q = s.query([DOGS, IMHA_MESH, IMHA_TEXT])
-    assert q == '("Dogs"[Mesh]) AND ("Anemia, Hemolytic, Autoimmune"[Mesh] OR ' \
-                '"immune-mediated hemolytic anemia"[tiab])'
+    assert q == '(("Dogs"[Mesh]) AND ("Anemia, Hemolytic, Autoimmune"[Mesh] OR ' \
+                '"immune-mediated hemolytic anemia"[tiab])) AND 2000:3000[dp]'
     e = s.query([DOGS, IMHA_MESH, IMHA_TEXT], "europepmc")
-    assert "Mesh" not in e and e.endswith("NOT SRC:MED") and "TITLE:" in e
+    assert "Mesh" not in e and "NOT SRC:MED" in e and "TITLE:" in e
 
 
 def test_term_only_finds_what_the_rest_of_its_block_misses(lit):
@@ -94,6 +94,155 @@ def test_letters_are_set_aside_not_screened(tmp_path, lit):
     todo = [r["key"] for r in s.to_screen(db, "imha")]
     assert todo == ["1", "2"] and db.execute(
         "SELECT decision FROM screening WHERE key = '5'").fetchone()[0] == "aside"
+
+
+# ---- the first year, and a paper found twice ---------------------------------------------
+
+def test_every_query_asks_from_the_first_year_on():
+    assert s.query([DOGS, IMHA_TEXT], "europepmc").endswith(") AND PUB_YEAR:[2000 TO 3000]")
+    only = s.term_only([IMHA_MESH, IMHA_TEXT], IMHA_TEXT)     # one block: no others carry it
+    assert only.endswith(" AND 2000:3000[dp]")
+
+
+def test_no_first_year_means_no_limit(monkeypatch):
+    monkeypatch.setitem(settings()["pipeline"], "published_from", 0)
+    assert s.query([DOGS, IMHA_MESH]) == '("Dogs"[Mesh]) AND ("Anemia, Hemolytic, Autoimmune"[Mesh])'
+    assert s.query([DOGS, IMHA_TEXT], "europepmc").endswith("NOT SRC:MED")
+
+
+def old_world(monkeypatch):
+    lit = world()
+    lit.records["10"] = rec("10", "Azathioprine in dogs with immune-mediated hemolytic anemia, "
+                            "1990-1997", "Dogs|Anemia, Hemolytic, Autoimmune", year="1998")
+    return lit.install(monkeypatch)
+
+
+def test_the_planner_counts_only_papers_from_the_first_year_on(monkeypatch):
+    old_world(monkeypatch)
+    terms = [dict(t) for t in (DOGS, IMHA_MESH)]
+    assert plan.count_hits(terms, None, [])["hits"] == 1             # 1, not 10 (1998)
+    assert [t["hits"] for t in terms] == [1, 1]
+
+
+def test_an_older_paper_a_follow_up_finds_is_not_linked(tmp_path, monkeypatch):
+    lit = old_world(monkeypatch)
+    lit.records["13"] = rec("13", "Dogs with IMHA given a fictional drug", year="")
+    db = s.connect(tmp_path / "v.db")
+    n, left = review._new_records(None, db, "imha", 2, ["10", "4", "13"], "references:2", TOPIC["terms"], 10)
+    assert (n, left) == (2, 0) and sorted(r[0] for r in db.execute("SELECT key FROM found")) == ["13", "4"]
+    s.to_screen(db, "imha")                     # an undated one is linked, then shown set aside
+    assert set_aside(db) == {"13": ("no_year", "No publication year given: too little to judge it by.")}
+
+
+def test_a_query_the_model_writes_asks_from_the_first_year_on(tmp_path, monkeypatch, lit,
+                                                               pipeline_settings):
+    monkeypatch.setattr(review, "load_topic", lambda name: TOPIC)
+    asked = []
+    monkeypatch.setattr(c, "europepmc_search", lambda http, q, limit=100: asked.append(q) or (0, []))
+
+    def respond(step, prompt, schema):
+        if step == "screen":
+            return screen_answer(prompt)
+        return {"reasoning": "", "term_changes": [], "follow": [], "nothing_left": False,
+                "extra_queries": [{"query": "TITLE:IMHA", "target": "x"}]}
+    db = s.connect(tmp_path / "v.db")
+    budget.set_budget(db, "imha", 2.0)
+    widen_until_nothing_new("imha", LLM(FakeGemini(respond), corpus=tmp_path), db)
+    assert "(TITLE:IMHA) AND PUB_YEAR:[2000 TO 3000]" in asked and "TITLE:IMHA" not in asked
+
+
+def found(db, *recs):
+    s.mark_found(db, "imha", 1, s.store_records(db, list(recs)), "test")
+
+
+def set_aside(db) -> dict:
+    return {k: (rule, why) for k, rule, why in db.execute(
+        "SELECT key, rule, summary FROM screening WHERE decision = 'aside'")}
+
+
+def test_older_and_undated_papers_are_set_aside_with_their_reason(tmp_path):
+    db = s.connect(tmp_path / "v.db")
+    found(db, rec("10", "Azathioprine in dogs with IMHA, 1990-1997", year="1999"),
+          rec("11", "A dog with immune-mediated hemolytic anemia", year=""),
+          rec("12", "Mycophenolate in dogs with IMHA", year="2000"))
+    assert [r["key"] for r in s.to_screen(db, "imha")] == ["12"]
+    assert set_aside(db) == {"10": ("too_old", "Published 1999; the search starts in 2000."),
+                             "11": ("no_year", "No publication year given: too little to judge it by.")}
+
+
+def paper(service="europepmc", **over):
+    return c.Record(service, **({"doi": "10.1/p", "title": "Mycophenolate in dogs with IMHA",
+                                 "abstract": "Dogs were treated.", "journal": "J Vet Intern Med",
+                                 "year": "2019", "pub_types": "research-article"} | over))
+
+
+@pytest.mark.parametrize("record, rule, why", [
+    (paper(abstract=""), "no_abstract", "No abstract: too little to judge it by."),
+    (paper(pub_types="Preprint"), "not_journal", "Not a paper in a journal (preprint)."),
+    (paper("openalex", pub_types="dissertation"), "not_journal", "Not a paper in a journal (dissertation)."),
+    (paper("openalex", pub_types="book-chapter"), "not_journal", "Not a paper in a journal (book-chapter)."),
+    (paper("openalex", pub_types="other"), "not_journal", "Not a paper in a journal (other)."),  # textbooks
+    (paper(pub_types="abstract|Journal Article"), "not_journal",                         # congress book
+     "Not a paper in a journal (abstract)."),
+    (paper(journal=""), "not_journal", "No journal named."),
+])
+def test_a_record_with_too_little_to_judge_is_set_aside(tmp_path, record, rule, why):
+    db = s.connect(tmp_path / "v.db")
+    found(db, record, paper(doi="10.1/q", title="Another study of prednisolone in dogs with IMHA"))
+    assert [r["key"] for r in s.to_screen(db, "imha")] == ["doi:10.1/q"]
+    assert set_aside(db) == {"doi:10.1/p": (rule, why)}
+
+
+TITLE = "Prednisolone and azathioprine in dogs with immune-mediated hemolytic anemia"
+
+
+def pubmed_copy(**over):
+    return c.Record("pubmed", **({"pmid": "20", "title": TITLE, "journal": "J Vet Intern Med",
+                                  "year": "2016", "abstract": "The longer abstract PubMed has."} | over))
+
+
+def other_copy(**over):
+    return c.Record("europepmc", **({"title": TITLE, "journal": "J Vet Intern Med", "year": "2016",
+                                     "doi": "10.1/x", "abstract": "Short."} | over))
+
+
+@pytest.mark.parametrize("first, second, same", [
+    (pubmed_copy(), other_copy(), True),                    # Europe PMC's copy, with the DOI
+    (pubmed_copy(), other_copy(title=TITLE.upper() + ".", journal="J. Vet. Intern. Med."), True),
+    (pubmed_copy(), other_copy(year="2017"), True),         # online one year, in print the next
+    (pubmed_copy(), other_copy(year="2018"), False),        # two years apart: another paper
+    (pubmed_copy(), other_copy(journal="Vet Rec"), False),  # another journal
+    (pubmed_copy(pmcid="PMC1"), other_copy(title="Other words, other journal", journal="X",
+                                           pmcid="PMC1"), True),
+    (pubmed_copy(title="Immune-mediated hemolytic anemia"),  # too generic to match on
+     other_copy(title="Immune-mediated hemolytic anemia"), False),
+])
+def test_a_paper_found_twice_is_screened_once(tmp_path, first, second, same):
+    db = s.connect(tmp_path / "v.db")
+    found(db, first, second)
+    todo = [r["key"] for r in s.to_screen(db, "imha")]
+    if same:
+        assert todo == ["20"]
+        assert set_aside(db) == {"doi:10.1/x": ("same_paper", "The same paper as PMID 20, screened once.")}
+    else:
+        assert sorted(todo) == ["20", "doi:10.1/x"] and set_aside(db) == {}
+
+
+def test_the_copy_with_an_abstract_is_the_one_kept(tmp_path):
+    db = s.connect(tmp_path / "v.db")
+    found(db, pubmed_copy(abstract=""), other_copy())
+    assert [r["key"] for r in s.to_screen(db, "imha")] == ["doi:10.1/x"]
+    assert set_aside(db) == {"20": ("same_paper", "The same paper as doi:10.1/x, screened once.")}
+
+
+def test_the_copy_already_screened_is_the_one_kept(tmp_path):
+    db = s.connect(tmp_path / "v.db")
+    found(db, other_copy())
+    s.save_screening(db, "imha", 1, [{"key": "doi:10.1/x", "decision": "keep", "rule": "",
+                                      "flags": [], "answers": {}}])
+    found(db, pubmed_copy())
+    assert s.to_screen(db, "imha") == []
+    assert set_aside(db) == {"20": ("same_paper", "The same paper as doi:10.1/x, screened once.")}
 
 
 # ---- the Planner -----------------------------------------------------------------------
@@ -148,6 +297,57 @@ def test_a_paper_source_must_be_a_marked_paper_containing_the_term():
     assert plan.check_source(item, "autoimmune haemolytic anaemia", "", marked, "") == ""
     assert plan.check_source(item, "Evans syndrome", "", marked, "") == "not in that paper"
     assert plan.check_source(item | {"evidence": "4"}, "x", "", marked, "")
+
+
+@pytest.mark.parametrize("given, kept", [
+    ({"value": "include", "source": "vet", "evidence": "azathioprine or not"},
+     {"value": "include", "source": "vet", "evidence": "azathioprine or not"}),
+    ({"value": "exclude", "source": "vet", "evidence": "phase 2"},           # not in the words
+     {"value": "exclude", "source": "suggestion", "evidence": "phase 2",
+      "note": "its evidence is not in the vet's words"}),
+    ({"value": "exclude", "source": "answer", "evidence": "only dogs with IMHA"},
+     {"value": "exclude", "source": "answer", "evidence": "only dogs with IMHA"}),
+    ({"value": "maybe", "source": "vet", "evidence": "x"},                   # not a listed value
+     {"value": "include", "source": "suggestion", "evidence": "x", "note": "not given: kept, as before"}),
+    (None, {"value": "include", "source": "suggestion", "evidence": "", "note": "not given: kept, as before"}),
+])
+def test_the_planners_healthy_treated_is_checked_like_any_item(given, kept):
+    answers = "Include healthy dogs? No, only dogs with IMHA"
+    assert plan.check_healthy(given, WORDS, {}, answers) == kept
+
+
+def test_the_planners_healthy_treated_reaches_the_search_file_and_the_round(tmp_path, monkeypatch, lit):
+    monkeypatch.setattr(plan, "CORPUS", tmp_path)
+    monkeypatch.setattr(plan, "ROOT", tmp_path)
+    (tmp_path / "topics").mkdir()
+    (tmp_path / "prompts").mkdir()
+    (tmp_path / "prompts" / "plan.md").write_text("system")
+    h = {"value": "exclude", "source": "vet", "evidence": "survival"}
+    plan.run_round("imha", LLM(FakeGemini(lambda *a: draft(healthy_treated=h)), corpus=tmp_path), None,
+                   words=WORDS)
+    md = (tmp_path / "plan" / "imha" / "round1.md").read_text()
+    assert "**Healthy or research animals given a treatment:** exclude (vet: survival)" in md
+    assert tomllib.loads(plan.start("imha").read_text())["screen"]["healthy_treated"] == "exclude"
+
+
+@pytest.mark.parametrize("source, kept", [("vet", 1), ("suggestion", 2)])
+def test_a_healthy_treated_the_vet_settled_is_not_asked_again(lit, source, kept):
+    asked = [{"question": "Include Evans syndrome?", "options": ["yes", "no"]},
+             {"question": "Should the database include studies of healthy or research dogs given "
+                          "azathioprine?", "options": ["Yes, include them", "No, only dogs with IMHA"]}]
+    h = {"value": "include", "source": source, "evidence": "azathioprine or not"}
+    got = plan.check(draft(questions=asked, healthy_treated=h), WORDS, {}, "", None)["questions"]
+    assert len(got) == kept and got[0]["question"] == "Include Evans syndrome?"
+
+
+def test_the_planner_is_told_how_to_decide_healthy_treated():
+    text = (plan.ROOT / "prompts" / "plan.md").read_text()
+    assert "## Healthy or research animals" in text and "- healthy_treated: see" in text
+    assert "the earliest stage decides" in text and "It never changes the search blocks" in text
+    assert plan.HEALTHY_Q in " ".join(text.split()) and "Ask only when the source is suggestion" in text
+    assert "healthy_treated" in plan.SCHEMA["required"]
+    assert plan.SCHEMA["properties"]["healthy_treated"]["properties"]["value"]["enum"] == [
+        "include", "exclude", "not_applicable"]
 
 
 def test_planner_rounds_then_start_writes_the_topic_file(tmp_path, monkeypatch, lit, pipeline_settings):
@@ -212,6 +412,78 @@ def screen_answer(prompt):
                     "animals": {"answer": "other_species" if cats else "patients",
                                 "quote": "cats" if cats else ""}})
     return {"records": out}
+
+
+def outcomes(db, rnd) -> dict:
+    return {(w, d): o for w, d, o in db.execute(
+        "SELECT what, detail, outcome FROM topic_log WHERE round = ?", (rnd,))}
+
+
+def test_a_step_the_round_limit_stops_is_not_run_and_can_come_back(tmp_path, monkeypatch, lit):
+    """As in a real round: the first follow-up used the round's new records, so the next ones
+    found nothing. They must say "not run" and stay open, not read "0 new" and count as done."""
+    cap = settings()["pipeline"]
+    db = s.connect(tmp_path / "v.db")
+    first = json.dumps({"key": "2", "how": "references"})        # cites 1, 3 (dogs) and 9 (cats)
+    later = json.dumps({"key": "4", "how": "references"})
+    answer = {"term_changes": [], "follow": [json.loads(first), json.loads(later)],
+              "extra_queries": [{"query": "TITLE:IMHA", "target": "x"}]}
+    monkeypatch.setitem(cap, "round_max_new", 1)
+    review.act("imha", TOPIC, TOPIC["terms"], answer, db, None, 2, None, "", "")
+    got = outcomes(db, 2)
+    assert got[("follow", first)] == ("1 new records naming the species; 1 more cut at this "
+                                      "round's limit of 1 new records")
+    assert got[("follow", later)] == "not run: this round's limit of 1 new records was reached"
+    assert got[("query", "TITLE:IMHA")] == "not run: this round's limit of 1 new records was reached"
+    assert review.ran(db, "imha") == set()                       # none of the three is done
+    monkeypatch.setitem(cap, "round_max_new", 10)                # a later round runs them
+    review.act("imha", TOPIC, TOPIC["terms"], answer, db, None, 3, None, "", "")
+    got = outcomes(db, 3)
+    assert got[("follow", first)] == "1 new records naming the species"   # 3, the one cut before
+    assert got[("follow", later)] == "0 new records naming the species"
+    assert sorted(r[0] for r in db.execute("SELECT key FROM found")) == ["1", "3"]
+    assert ("follow", first) in review.ran(db, "imha")
+
+
+def test_the_chat_counts_only_the_follow_ups_that_ran(tmp_path):
+    db = s.connect(tmp_path / "v.db")
+    for detail, outcome in (("a", "5 new records naming the species"),
+                            ("b", "not run: this round's limit of 200 new records was reached")):
+        review.log(db, "imha", 2, "follow", detail, outcome)
+    db.execute("INSERT INTO search_rounds VALUES ('imha', 2, '2026-11-17T10:00', '2026-11-17T11:00', 1)")
+    db.execute("INSERT INTO records (key, title) VALUES ('1', 't')")
+    db.execute("INSERT INTO screening (topic, key, decision, round) VALUES ('imha', '1', 'keep', 2)")
+    db.commit()
+    texts = " ".join(i.get("text", "") for i in views.history(tmp_path / "v.db", tmp_path, "imha"))
+    assert "1 reference list or citation list followed" in texts
+
+
+def test_a_term_the_round_limit_stops_is_not_run(tmp_path, monkeypatch, lit):
+    monkeypatch.setitem(settings()["pipeline"], "round_max_new", 1)
+    db = s.connect(tmp_path / "v.db")
+    first = {"block": "condition", "action": "add", "kind": "text",
+             "term": "autoimmune haemolytic anaemia", "evidence": "x"}      # finds 3 and 4
+    later = first | {"term": "mycophenolate"}
+    terms = review.current_terms(db, "imha", TOPIC)              # as a round does, first
+    review.act("imha", TOPIC, terms, {"term_changes": [first, later], "follow": [],
+                                      "extra_queries": []}, db, None, 2, None, "", "")
+    got = [r[0] for r in db.execute("SELECT outcome FROM topic_log")]
+    assert got == [("added: 2 new records, 1 to screen; the rest cut at this round's limit of 1 "
+                    "new records"), "not run: this round's limit of 1 new records was reached"]
+    assert [t[0] for t in db.execute("SELECT term FROM terms WHERE source = 'review'")] == [
+        "autoimmune haemolytic anaemia"]
+
+
+def test_a_review_whose_references_were_not_followed_is_still_offered(tmp_path, lit):
+    db = s.connect(tmp_path / "v.db")
+    s.run_search("imha", TOPIC, db, None)
+    s.save_screening(db, "imha", 1, [{"key": "2", "decision": "lead", "rule": "", "flags": [],
+                                      "answers": {}}])
+    refs = json.dumps({"key": "2", "how": "references"})
+    review.log(db, "imha", 2, "follow", refs, "not run: this round's limit of 200 new records was reached")
+    assert [ld["key"] for ld in review.counts("imha", TOPIC, TOPIC["terms"], db, None, 3)["leads"]] == ["2"]
+    review.log(db, "imha", 3, "follow", refs, "2 new records naming the species")
+    assert review.counts("imha", TOPIC, TOPIC["terms"], db, None, 4)["leads"] == []
 
 
 def test_review_loop_follows_adds_brakes_and_stops(tmp_path, monkeypatch, lit, pipeline_settings):

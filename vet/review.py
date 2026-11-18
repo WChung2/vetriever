@@ -153,8 +153,7 @@ def counts(name: str, topic: dict, terms: list[dict], db, http: c.Http, rnd: int
             words = [w[:6] for w in _words(tg["item"]) if w not in STOP][:3]
             coverage[tg["item"]] = sum(any(w in t for w in words) for t in texts.values()) if words else None
     leads = [{"key": k, "title": _record(db, k).get("title")} for k, d in dec.items() if d == "lead"]
-    done = {(r["what"], r["detail"]) for r in db.execute(
-        "SELECT what, detail FROM topic_log WHERE topic = ?", (name,))}
+    done = ran(db, name)
     history = [{"round": r["round"], "what": r["what"], "detail": r["detail"], "outcome": r["outcome"]}
                for r in db.execute("SELECT * FROM topic_log WHERE topic = ? ORDER BY rowid", (name,))]
     return {"terms": per_term, "candidates": cands, "missed": missed[:30],
@@ -175,18 +174,39 @@ def system_prompt(topic: dict) -> str:
 
 # ---- what code does with the answer ----------------------------------------------------
 
-def _new_records(http, db, name, rnd, recs_or_pmids, how, terms, budget) -> int:
-    """Store what a follow-up or query found; only records naming the species and not yet
-    found for this topic are linked to the topic (and so screened)."""
+# A round links at most round_max_new new records. A step the limit stops before it starts is
+# "not run", and one it cuts short says how many were left out: neither counts as done, so a
+# later round may propose it again (and the model sees why, in the history).
+NOT_RUN = "not run: this round's limit of {} new records was reached"
+CUT = "cut at this round's limit"
+
+
+def ran(db, name: str) -> set[tuple[str, str]]:
+    """(what, detail) of every step that ran in full for this topic."""
+    return {(r["what"], r["detail"]) for r in db.execute(
+        "SELECT what, detail, outcome FROM topic_log WHERE topic = ?", (name,))
+        if not ((r["outcome"] or "").startswith("not run:") or CUT in (r["outcome"] or ""))}
+
+
+def _linked(n: int, left: int, cap: int) -> str:
+    return f"{n} new records naming the species" + (
+        f"; {left} more {CUT} of {cap} new records" if left else "")
+
+
+def _new_records(http, db, name, rnd, recs_or_pmids, how, terms, budget) -> tuple[int, int]:
+    """Store what a follow-up or query found; only records naming the species, published from
+    the search's first year on and not yet found for this topic are linked to it (and screened),
+    at most `budget`. Returns (linked, left out by the budget)."""
     if recs_or_pmids and isinstance(recs_or_pmids[0], str):
         keys = s.pubmed_fetch(http, db, recs_or_pmids)
     else:
         keys = s.store_records(db, recs_or_pmids)
     have = {r[0] for r in db.execute("SELECT key FROM found WHERE topic = ?", (name,))}
-    new = [k for k in dict.fromkeys(keys) if k not in have and s.species_match(_record(db, k), terms)]
-    new = new[:max(budget, 0)]
+    fits = [k for k in dict.fromkeys(keys) if k not in have and not s.too_old(_record(db, k))
+            and s.species_match(_record(db, k), terms)]
+    new = fits[:max(budget, 0)]
     s.mark_found(db, name, rnd, new, how)
-    return len(new)
+    return len(new), len(fits) - len(new)
 
 
 def _openalex_id(http, db, key) -> str:
@@ -198,23 +218,25 @@ def _openalex_id(http, db, key) -> str:
     return recs[0].openalex_id if recs else ""
 
 
-def follow(http, db, name, rnd, key, how, terms, budget) -> tuple[int, str]:
+def follow(http, db, name, rnd, key, how, terms, budget) -> tuple[int, int, str]:
+    """(linked, left out by the budget, why nothing could be followed)."""
     if how == "similar":
         if not key.isdigit():
-            return 0, "similar articles need a PMID"
-        return _new_records(http, db, name, rnd, c.pubmed_similar(http, key, 20),
-                            f"similar:{key}", terms, budget), ""
+            return 0, 0, "similar articles need a PMID"
+        return (*_new_records(http, db, name, rnd, c.pubmed_similar(http, key, 20),
+                              f"similar:{key}", terms, budget), "")
     wid = _openalex_id(http, db, key)
     if not wid:
-        return 0, "not in OpenAlex"
+        return 0, 0, "not in OpenAlex"
     flt = f"cited_by:{wid}" if how == "references" else f"cites:{wid}"
     _, recs = c.openalex_works(http, 200, filter=flt)
     pmids = [r.pmid for r in recs if r.pmid]
-    n = _new_records(http, db, name, rnd, pmids, f"{how}:{key}", terms, budget) if pmids else 0
+    n, left = _new_records(http, db, name, rnd, pmids, f"{how}:{key}", terms, budget) if pmids else (0, 0)
     others = [r for r in recs if not r.pmid]
     if others:
-        n += _new_records(http, db, name, rnd, others, f"{how}:{key}", terms, budget - n)
-    return n, ""
+        more, more_left = _new_records(http, db, name, rnd, others, f"{how}:{key}", terms, budget - n)
+        n, left = n + more, left + more_left
+    return n, left, ""
 
 
 def _added_records(http, terms, t, problems) -> tuple[int, list[str]]:
@@ -225,9 +247,8 @@ def _added_records(http, terms, t, problems) -> tuple[int, list[str]]:
 def act(name, topic, terms, answer, db, http, rnd, llm, system, message) -> dict:
     """Apply one review answer under the brake; returns what was done."""
     cfg = settings()["pipeline"]
-    budget = cfg["round_max_new"]
-    done = {(r["what"], r["detail"]) for r in db.execute(
-        "SELECT what, detail FROM topic_log WHERE topic = ?", (name,))}
+    budget = cap = cfg["round_max_new"]
+    done = ran(db, name)
     have_terms = {(t["block"], t["term"].lower()) for t in terms}
     added, broad, problems, first = [], [], [], answer
     for revising in (False, True):
@@ -249,6 +270,9 @@ def act(name, topic, terms, answer, db, http, rnd, llm, system, message) -> dict
             if why:
                 log(db, name, rnd, "add term", t, f"refused: {why}")
                 continue
+            if budget <= 0:
+                log(db, name, rnd, "add term", t, NOT_RUN.format(cap))
+                continue
             n, ids = _added_records(http, terms + added, t, problems)
             if n > cfg["term_max_new"]:
                 broad_now.append({"term": t["term"], "block": t["block"], "new_records": n})
@@ -263,7 +287,8 @@ def act(name, topic, terms, answer, db, http, rnd, llm, system, message) -> dict
             s.mark_found(db, name, rnd, ids, f"term:{t['term']}")     # judged on all it adds
             got = len(set(ids) - have)
             budget -= got
-            log(db, name, rnd, "add term", t, f"added: {n} new records, {got} to screen")
+            log(db, name, rnd, "add term", t, f"added: {n} new records, {got} to screen"
+                + (f"; the rest {CUT} of {cap} new records" if got < n and budget <= 0 else ""))
         broad += broad_now
         if revising or not broad_now:
             break
@@ -276,27 +301,34 @@ def act(name, topic, terms, answer, db, http, rnd, llm, system, message) -> dict
         what = json.dumps({"key": f["key"], "how": f["how"]})
         if ("follow", what) in done:
             continue
-        n, why = follow(http, db, name, rnd, f["key"], f["how"], terms, budget)
+        if budget <= 0:
+            log(db, name, rnd, "follow", what, NOT_RUN.format(cap))
+            continue
+        n, left, why = follow(http, db, name, rnd, f["key"], f["how"], terms, budget)
         budget -= n
-        log(db, name, rnd, "follow", what, why or f"{n} new records naming the species")
+        log(db, name, rnd, "follow", what, why or _linked(n, left, cap))
     for q in first["extra_queries"][:cfg["max_queries"]]:
         if ("query", q["query"]) in done:
             continue
         if "BODY:" in q["query"].upper():
             log(db, name, rnd, "query", q["query"], "refused: full-text search is not used")
             continue
+        if budget <= 0:
+            log(db, name, rnd, "query", q["query"], NOT_RUN.format(cap))
+            continue
+        dated = s.dated(q["query"], "europepmc")     # the model's words, from the first year on
         try:
-            hits, recs = c.europepmc_search(http, q["query"], 1000)
+            hits, recs = c.europepmc_search(http, dated, 1000)
         except Exception as e:  # noqa: BLE001 — a bad query is reported to the model
             log(db, name, rnd, "query", q["query"], f"refused by Europe PMC: {e}")
             continue
-        s.log_query(db, name, rnd, "europepmc", q["query"], hits)
+        s.log_query(db, name, rnd, "europepmc", dated, hits)
         if hits > cfg["term_max_new"]:
             log(db, name, rnd, "query", q["query"], f"too broad: {hits} records")
             continue
-        n = _new_records(http, db, name, rnd, recs, f"query:{q['query'][:80]}", terms, budget)
+        n, left = _new_records(http, db, name, rnd, recs, f"query:{q['query'][:80]}", terms, budget)
         budget -= n
-        log(db, name, rnd, "query", q["query"], f"{hits} hits, {n} new naming the species")
+        log(db, name, rnd, "query", q["query"], f"{hits} hits, " + _linked(n, left, cap))
     return {"added": added, "too_broad": broad, "problems": problems}
 
 

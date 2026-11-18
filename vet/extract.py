@@ -38,6 +38,7 @@ from datetime import date
 from pathlib import Path
 
 from .codebook import KINDS, TABLES, Codebook, Field
+from .screen import healthy_setting
 from .settings import DB, ROOT
 from .store import Store, _identifiers, document_key
 from .validate import ROW_KEY, SOURCE_ID, _flat, validate
@@ -246,6 +247,10 @@ def _gate_form(topic: dict) -> str:
     also = f" (also called {'; '.join(s['also_called'])})" if s.get("also_called") else ""
     related = (f" A related condition counts as yes: {'; '.join(s['related'])}."
                if s.get("related") else "")
+    if healthy_setting(topic) == "include":         # the words appear only where they apply
+        named = [t for t in s.get("treatments", []) if t != "none named"]
+        related += (f" Healthy or research {s['species']} that were themselves given a treatment "
+                    "of interest also count as yes" + (f": {'; '.join(named)}." if named else "."))
     return (f"\n### gate (answer it first)\nDoes the document report a study of "
             f"{s['condition']}{also} in {s['species']}: animals with the condition, as a group "
             f"or as a case?{related}\n- answer: yes | no | unclear\n- quote: the shortest "
@@ -374,12 +379,18 @@ def _short(ref: str) -> str:
     return ref.removeprefix(PROVISIONAL + "-")
 
 
+def text_file(source_id: str, record: dict | None) -> str:
+    """The text a document is read from, relative to root: docs/<source_id>.txt, or what the
+    record names (an abstract kept beside a full text that may not be sent)."""
+    return str((record or {}).get("text_file") or f"docs/{source_id}.txt")
+
+
 class _Doc:
     def __init__(self, source_id: str, topic_name: str, topic: dict, llm, cb: Codebook,
                  root: Path, record: dict):
         self.source_id, self.topic_name, self.topic = source_id, topic_name, topic
         self.llm, self.cb, self.root, self.record = llm, cb, root, record
-        self.text = (root / "docs" / f"{source_id}.txt").read_text("utf-8")
+        self.text = (root / text_file(source_id, record)).read_text("utf-8")
         self.flat = _flat(self.text)
         self.system = (ROOT / "prompts" / "structure.md").read_text("utf-8")
         self.rows: list[Row] = []
@@ -617,7 +628,7 @@ class _Doc:
 
     def _source(self, got) -> Row:
         rec = self.record
-        keys = {"source_id": self.source_id, "text_file": f"docs/{self.source_id}.txt"} | {
+        keys = {"source_id": self.source_id, "text_file": text_file(self.source_id, rec)} | {
             k: str(rec.get(k) or "") for k in CODE["sources"] - {"source_id", "text_file"}}
         cells = self._cells("sources", got)
         if rec.get("doi"):                  # the index record's DOI, not the model's copy
@@ -813,10 +824,12 @@ def read_log(store: Store) -> list[dict]:
             store.db.execute(f"SELECT {names} FROM extraction_log ORDER BY rowid")]
 
 
-def write_abstract(record: dict, root: Path) -> dict:
+def write_abstract(record: dict, root: Path, beside: bool = False) -> dict:
     """A paper with no full text: its title and abstract become <root>/docs/<source_id>.txt.
     record holds title, abstract, pmid and doi (source_id too, when known). Returns the record
-    for extract_document, with access = abstract_only."""
+    for extract_document, with access = abstract_only. beside: the paper has a full text that
+    may not be sent (its licence); the abstract goes beside it, in <source_id>.abstract.txt,
+    and the full text is left as it is."""
     title, abstract = (str(record.get(k) or "").strip() for k in ("title", "abstract"))
     ids = {k: str(record.get(k) or "").strip() for k in ("doi", "pmid", "pmcid", "url")}
     if not abstract:
@@ -824,12 +837,13 @@ def write_abstract(record: dict, root: Path) -> dict:
     sid = record.get("source_id") or document_key({**ids, "source_id": ""})
     if not SOURCE_ID.fullmatch(sid):
         raise ValueError(f"{sid!r} is not a source_id: the record needs a DOI or PMID")
-    path, text = root / "docs" / f"{sid}.txt", f"{title}\n\n{abstract}\n"
+    name = f"docs/{sid}.abstract.txt" if beside else f"docs/{sid}.txt"
+    path, text = root / name, f"{title}\n\n{abstract}\n"
     if path.exists() and path.read_text("utf-8") != text:
         raise ValueError(f"{path} already holds another text; not overwritten")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, "utf-8")
-    return {**ids, "source_id": sid, "access": "abstract_only",
+    return {**ids, "source_id": sid, "access": "abstract_only", "text_file": name,
             "retrieved_date": date.today().isoformat()}
 
 
@@ -848,7 +862,7 @@ def extract_document(source_id: str, topic_name: str, topic: dict, llm, store: S
     stored = _stored_as(store, source_id, record)
     if stored:
         return ExtractReport(source_id, stopped=f"already in the database as {stored}")
-    path = root / "docs" / f"{source_id}.txt"
+    path = root / text_file(source_id, record)
     if not path.is_file() or not path.read_text("utf-8").strip():
         report = ExtractReport(source_id, stopped=f"no text in {path}")
         write_log(store, report, [{"step": "study", "problem": report.stopped}])
@@ -869,13 +883,19 @@ def extract_document(source_id: str, topic_name: str, topic: dict, llm, store: S
 
 
 def run_extract(keys: list[str], topic_name: str, llm, db_path: Path = DB,
-                abstracts: dict | None = None, say=print) -> list[ExtractReport]:
+                abstracts: dict | None = None, say=print,
+                abstract_only: frozenset[str] = frozenset()) -> list[ExtractReport]:
     """Extract each document in turn into the database at db_path, reading its text from
     docs/ beside it. A key with no text there but a record in abstracts ({source_id: {title,
-    abstract, pmid, doi}}) is extracted from its title and abstract."""
+    abstract, pmid, doi}}) is extracted from its title and abstract. A key in abstract_only is
+    read from its abstract even when a full text is stored (one whose licence doesn't allow
+    sending it); without its abstract it is refused before anything is sent."""
     bad = [k for k in keys if not SOURCE_ID.fullmatch(k)]
     if bad:
         raise ValueError(f"not source_ids: {bad[:3]}")
+    missing = sorted(k for k in set(keys) & set(abstract_only) if k not in (abstracts or {}))
+    if missing:
+        raise ValueError(f"read from their abstract only, but no abstract given: {missing[:3]}")
     store = Store(db_path)
     root, out = Path(db_path).parent, []
     try:
@@ -885,7 +905,9 @@ def run_extract(keys: list[str], topic_name: str, llm, db_path: Path = DB,
         _screen(topic)
         for key in keys:
             record = None
-            if not (root / "docs" / f"{key}.txt").is_file() and key in (abstracts or {}):
+            if key in abstract_only:
+                record = write_abstract({**abstracts[key], "source_id": key}, root, beside=True)
+            elif not (root / "docs" / f"{key}.txt").is_file() and key in (abstracts or {}):
                 record = write_abstract({**abstracts[key], "source_id": key}, root)
             out.append(extract_document(key, topic_name, topic, llm, store, root, record))
             say(out[-1].line())

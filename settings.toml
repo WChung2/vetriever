@@ -16,7 +16,7 @@ structure = "low"    # 3.8-flash doesn't think at "low"; "medium" tested 2026-11
 review = "medium"
 
 [spending]
-cap_usd = 20.00         # hard stop for everything in corpus/spend.csv; raised per phase, with your OK
+cap_usd = 50.00         # hard stop for everything in corpus/spend.csv; raised per phase, with your OK
 max_output_tokens = 16384
 # extraction answers are long (a results table can be 50 rows), and thinking counts too
 max_output_tokens_by_step = { structure = 32768 }
@@ -28,6 +28,7 @@ review_usd_per_call = 0.03   # one review call: $0.02 on average
 [pipeline]
 plan_rounds = 3          # the Planner revises at most this many times
 plan_papers = 7          # search results shown to the vet in each Planner round
+published_from = 2000    # papers published earlier are not searched or screened; 0 = no limit
 screen_budget = 1500     # records screened per topic before the Planner asks to narrow
 search_budget = 2.00     # what a new search may spend (USD) unless the vet sets another
 max_terms = 6            # term changes per review round

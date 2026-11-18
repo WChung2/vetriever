@@ -120,6 +120,27 @@ def confidence(answers: dict, flags: list[str], text: str) -> tuple[str, str]:
     return "high", "the abstract shows the condition in patients, and both quotes are in it"
 
 
+HEALTHY = ("include", "exclude", "not_applicable")
+
+
+def healthy_setting(topic: dict) -> str:
+    """The search's healthy_treated: are studies of healthy or research animals given a
+    treatment of interest kept? From the Planner and the vet; a search made before it, include."""
+    v = topic.get("screen", {}).get("healthy_treated", "include")
+    return v if v in HEALTHY else "include"
+
+
+def considered(answers: dict, flags: list[str], text: str, healthy: str = "include") -> bool:
+    """Worth reading into the database when the vet approves all at once: high confidence, or
+    healthy animals given a treatment when the search keeps them (healthy_setting). Not: low
+    confidence, a related condition, a survey, a quote not found in the record, or no
+    abstract. The vet can still approve any of those by hand."""
+    level, _ = confidence(answers, flags, text)
+    treated = (answers.get("animals") or {}).get("answer") == "healthy_treated"
+    return level == "high" or (healthy == "include" and level == "medium" and treated
+                               and "title_only" not in flags)
+
+
 def screen(name: str, topic: dict, records: list[dict], llm, batch: int = BATCH,
            workers: int = WORKERS) -> list[dict]:
     """One result per record, in order. A record is a dict with the keys in SENT (the

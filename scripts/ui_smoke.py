@@ -10,6 +10,8 @@ what the unit tests can't (they call the app in-process, with the server and bro
   5. clicking Next from the bottom of a long list lands at the top of the next page, with the
      header still on screen (a real click: only a browser can show where a page ends up)
   6. a second `vet ui` on the same port stops, before opening any browser
+  7. a plain form's POST from a page is accepted (the Send box and the Planner's forms are plain
+     forms): Chrome sends their Origin by the page's referrer policy, and the guard checks it
 
 Only the process this script starts is stopped. Made-up data only, in a temporary folder; nothing
 leaves the machine (Chrome runs with its background services off and a throwaway profile).
@@ -139,9 +141,10 @@ def browser_problems(exe: str, url: str, profile: Path) -> list[str]:
         w in line for w in ("violates", "Refused", "Uncaught", "Failed to load", "Error"))]
 
 
-def next_from_the_bottom(exe: str, url: str, profile: Path) -> dict:
-    """Open a long list in a real Chrome, scroll to its bottom, click Next, and say where the
-    page ended up. Chrome is driven through its debugging port, on this machine only."""
+def in_chrome(exe: str, profile: Path, steps):
+    """Run `steps(run)` in a real Chrome driven through its debugging port, on this machine
+    only; `run(code)` evaluates JavaScript in the page, `run.call(method, **params)` sends a
+    DevTools command. Returns what `steps` returns."""
     port = free_port()
     browser = subprocess.Popen([exe, "--headless=new", "--disable-gpu", "--no-first-run",
                                 "--no-default-browser-check", "--disable-background-networking",
@@ -173,17 +176,9 @@ def next_from_the_bottom(exe: str, url: str, profile: Path) -> dict:
             async def run(code: str):
                 got = await call("Runtime.evaluate", expression=code, returnByValue=True)
                 return got["result"].get("value")
+            run.call = call
             await call("Page.enable")
-            await call("Page.navigate", url=url)
-            await asyncio.sleep(1.5)
-            # instantly, as a person scrolling does: the page's CSS would animate a scripted scroll
-            await run("window.scrollTo({top: document.scrollingElement.scrollHeight, "
-                      "behavior: 'instant'})")
-            await asyncio.sleep(0.2)
-            await run("[...document.querySelectorAll('nav[aria-label=\"Pages\"] a')]"
-                      ".find(a=>a.innerText.includes('Next')).click()")
-            await asyncio.sleep(1.5)
-            return await run(WHERE)
+            return await steps(run)
     try:
         return asyncio.run(asyncio.wait_for(drive(), 40))
     finally:
@@ -192,6 +187,39 @@ def next_from_the_bottom(exe: str, url: str, profile: Path) -> dict:
             browser.wait(10)
         except subprocess.TimeoutExpired:
             browser.kill()
+
+
+def next_from_the_bottom(exe: str, url: str, profile: Path) -> dict:
+    """Open a long list, scroll to its bottom, click Next, and say where the page ended up."""
+    async def steps(run):
+        await run.call("Page.navigate", url=url)
+        await asyncio.sleep(1.5)
+        # instantly, as a person scrolling does: the page's CSS would animate a scripted scroll
+        await run("window.scrollTo({top: document.scrollingElement.scrollHeight, "
+                  "behavior: 'instant'})")
+        await asyncio.sleep(0.2)
+        await run("[...document.querySelectorAll('nav[aria-label=\"Pages\"] a')]"
+                  ".find(a=>a.innerText.includes('Next')).click()")
+        await asyncio.sleep(1.5)
+        return await run(WHERE)
+    return in_chrome(exe, profile, steps)
+
+
+def plain_form_sent(exe: str, url: str, profile: Path, key: str) -> str:
+    """On a page, send a plain form (not htmx: a navigation POST, as the Send box and the
+    Planner's forms are) approving one made-up record; the text of the page it lands on."""
+    async def steps(run):
+        await run.call("Page.navigate", url=url)
+        await asyncio.sleep(1.5)
+        await run("""(function(){const f=document.createElement('form');f.method='post';
+          f.action=location.pathname.replace(/review$/,'decide');
+          for (const [n,v] of [['csrf',document.querySelector('input[name=csrf]').value],
+              ['action','approve'],['key','""" + key + """']]){
+            const i=document.createElement('input');i.type='hidden';i.name=n;i.value=v;f.append(i);}
+          document.body.append(f);f.submit();})()""")
+        await asyncio.sleep(1.5)
+        return await run("document.body.innerText")
+    return in_chrome(exe, profile, steps)
 
 
 def main() -> int:
@@ -277,6 +305,14 @@ def main() -> int:
             check(end["head"] == 0 and end["root"] > 0, "the header stays on screen")
             check(end["headEnd"] <= end["list"] <= end["window"] // 3,
                   f"the list starts at the top of the window ({end['list']}px down)")
+            print("7. a plain form sent from a page")
+            landed = plain_form_sent(exe, f"{base}/topics/{TOPIC}/review?view=to_review",
+                                     work / "chrome-form", "long0")
+            con = sqlite3.connect(db)
+            approved = con.execute("SELECT approved FROM screening WHERE key = 'long0'").fetchone()[0]
+            con.close()
+            check("only accepted from these pages" not in landed and bool(approved),
+                  "its POST is accepted (the browser sends the page's Origin)")
         else:
             print("  skip  no Chrome or Chromium installed")
 

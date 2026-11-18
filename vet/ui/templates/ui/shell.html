@@ -58,7 +58,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="referrer" content="no-referrer">{# Vetriever #}
+  <meta name="referrer" content="same-origin">{# Vetriever: a form's POST keeps its Origin; links out send no referrer #}
   <title>{% block title %}{% endblock %}{% block site_title_separator %} · {% endblock %}{% block site_title %}{% endblock %}</title>
   {#
     Theme is applied before first paint so a dark-mode reload never flashes

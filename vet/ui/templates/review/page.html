@@ -14,7 +14,7 @@
   "rejected": ("Rejected by you", "The articles you rejected. They go no further; undo one to review it again."),
   "dropped": ("Dropped by screening", "Judged off topic from the abstract, each with its reason and the sentence it rests on. If one belongs in, keep it anyway."),
   "overviews": ("Overviews & guidelines", "Review articles, guidelines and consensus statements: not studies, so not read into the database. The search followed their references to find more studies; open them as background."),
-  "aside": ("Letters & errata", "Letters, comments and errata, set aside without screening."),
+  "aside": ("Set aside", "Not screened: letters, comments and errata; second copies of a paper already found, which is screened once; records with too little to judge (no year, no abstract, or not a paper in a journal: preprints, theses, book chapters, congress abstracts); and papers published before the search's first year."),
 } %}
 {{ topic_header(name, s, "review", counts) }}
 {% call stack(gap=6) %}
@@ -97,27 +97,22 @@
   {% if data.view == "to_review" and data.tabs.to_review %}
   {% call card(size="sm") %}
     {% call stack(gap=3) %}
+    {% set left = data.tabs.to_review - considered_waiting %}
+    <span><b>{{ data.tabs.to_review | thousands }}</b> article{{ "" if data.tabs.to_review == 1 else "s" }} wait{{ "s" if data.tabs.to_review == 1 else "" }} for your decision{% if data.tabs.approved %}; {{ data.tabs.approved | thousands }} approved so far{% endif %}.</span>
+    {% if considered_waiting %}
     <form method="post" action="/topics/{{ name }}/decide" hx-post="/topics/{{ name }}/decide"
-          hx-confirm="Approve all {{ data.tabs.to_review }} articles waiting for your review? You can undo any of them.">
+          hx-confirm="Approve the {{ considered_waiting }} articles worth considering? You can undo any of them.">
       <input type="hidden" name="csrf" value="{{ token }}">
       <input type="hidden" name="all" value="1"><input type="hidden" name="action" value="approve">
-      <input type="hidden" name="view" value="to_review">
+      <input type="hidden" name="level" value="considered"><input type="hidden" name="view" value="to_review">
       {% call row(gap=3, justify="between") %}
-        <span><b>{{ data.tabs.to_review | thousands }}</b> article{{ "" if data.tabs.to_review == 1 else "s" }} wait{{ "s" if data.tabs.to_review == 1 else "" }} for your decision{% if data.tabs.approved %}; {{ data.tabs.approved | thousands }} approved so far{% endif %}.</span>
-        {{ button("Approve all " ~ (data.tabs.to_review | thousands), type="submit", variant="outline") }}
+        <span><b>{{ considered_waiting | thousands }}</b> are worth considering: high confidence, and healthy dogs given a treatment (dose and pharmacokinetic studies).</span>
+        {{ button("Approve the " ~ (considered_waiting | thousands) ~ " worth considering", type="submit") }}
       {% endcall %}
     </form>
-    {% if high_waiting %}
-    <form method="post" action="/topics/{{ name }}/decide" hx-post="/topics/{{ name }}/decide"
-          hx-confirm="Approve the {{ high_waiting }} high-confidence articles? You can undo any of them.">
-      <input type="hidden" name="csrf" value="{{ token }}">
-      <input type="hidden" name="all" value="1"><input type="hidden" name="action" value="approve">
-      <input type="hidden" name="level" value="high"><input type="hidden" name="view" value="to_review">
-      {% call row(gap=3, justify="between") %}
-        <span>The quickest start: the articles the screening is surest about.</span>
-        {{ button("Approve the " ~ (high_waiting | thousands) ~ " high-confidence", type="submit") }}
-      {% endcall %}
-    </form>
+    {% endif %}
+    {% if left %}
+    {{ caption("The other " ~ (left | thousands) ~ " (low confidence, a related condition, a survey, or a sentence not found) are not taken in: approve one yourself if it belongs.") }}
     {% endif %}
     {% endcall %}
   {% endcall %}

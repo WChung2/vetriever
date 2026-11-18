@@ -454,6 +454,34 @@ def test_a_form_can_only_pick_what_was_offered(rig):
     assert got["paper"] == [{"key": paper, "relevant": "yes"}] and got["known"] == ["123"]
 
 
+@pytest.mark.parametrize("form, answer", [
+    ({"q0": "yes", "q0_own": "  only with \n IMTP "}, "yes: only with IMTP"),   # a detail, kept with it
+    ({"q0_own": "mycophenolate"}, "mycophenolate"),                             # no option fits
+    ({"q0": "a made-up option", "q0_own": "x" * 400}, "x" * 300),               # own words, capped
+    ({"q0": "a made-up option"}, None),                                         # nothing offered
+])
+def test_a_question_takes_the_vets_own_words_too(rig, form, answer):
+    name = ask(rig)
+    state = views.plan_state(rig.corpus, name)
+    got = plan.answers_from(state, lambda f: form.get(f, ""))["question"]
+    assert got == ([{"question": "Include Evans syndrome?", "answer": answer}] if answer else [])
+
+
+def test_the_round_shows_whether_healthy_dogs_are_kept(rig):
+    name = ask(rig)
+    html = rig.client.get(f"/topics/{name}/chat").text
+    assert "healthy or research dogs given a treatment: included" in html       # not given: as before
+
+
+def test_the_own_words_box_is_under_each_question_and_reaches_the_planner(rig):
+    name = ask(rig)
+    html = rig.client.get(f"/topics/{name}/chat").text
+    assert 'name="q0_own"' in html and "Your own answer, or a detail" in html
+    post(rig, f"/topics/{name}/plan", go="revise", round="1", q0="yes", q0_own="mycophenolate",
+         request="r2")
+    assert "yes: mycophenolate" in [c for c in rig.model.calls if c["step"] == "plan"][1]["prompt"]
+
+
 def test_answers_reach_the_planner_and_the_chat(rig):
     name = ask(rig)
     r = post(rig, f"/topics/{name}/plan", go="revise", round="1", note="Leave out cats",
@@ -472,6 +500,30 @@ def test_the_planners_last_round_can_only_be_agreed(rig):
     assert 'name="go" value="agree"' in html                   # the button sends the choice
     r = post(rig, f"/topics/{name}/plan", go="revise", round="2", request="r3")
     assert "note=last_round" in r.headers["location"] and rig.model.steps("plan") == 2
+
+
+@pytest.mark.parametrize("answer", [{"q0": "yes"}, {"q0_own": "mycophenolate"}, {"note": "Leave out cats"}])
+def test_answers_go_through_revise_not_agree(rig, answer):
+    name = ask(rig)
+    r = post(rig, f"/topics/{name}/plan", go="agree", round="1", request="r2", **answer)
+    assert "note=revise_first" in r.headers["location"] and stage(rig, name) == "planning"
+    assert "press Revise with my answers" in rig.client.get(r.headers["location"]).text
+
+
+def test_papers_marked_or_known_can_still_be_agreed(rig):
+    name = ask(rig)
+    paper = views.plan_state(rig.corpus, name)["rounds"][0]["papers"][0]["key"]
+    post(rig, f"/topics/{name}/plan", go="agree", round="1", request="r2", known="123",
+         **{f"p{paper}": "yes"})
+    assert stage(rig, name) == "ready"
+
+
+def test_on_the_last_round_answers_can_be_agreed(rig):
+    name = ask(rig)
+    post(rig, f"/topics/{name}/plan", go="revise", round="1", request="r2")
+    assert "can no longer change the search" in rig.client.get(f"/topics/{name}/chat").text
+    post(rig, f"/topics/{name}/plan", go="agree", round="2", request="r3", q0="yes")
+    assert stage(rig, name) == "ready"
 
 
 def test_an_old_planner_form_is_refused(rig):

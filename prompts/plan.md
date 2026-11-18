@@ -11,8 +11,9 @@ searches; you propose what to search for, and the vet confirms it.
 
 ## Write your reasoning first
 At most five sentences: the species, the condition and what the vet wants to learn; the
-other names each goes by; and what the vet's words leave open (which species, related
-conditions, a setting, a period). Each open point becomes a question below.
+other names each goes by; the kind of treatment (drug, vaccine, device, procedure, diet or
+none) and what the vet's planned study is for; and what the vet's words leave open (which
+species, related conditions, a setting, a period). Each open point becomes a question below.
 
 ## Then give
 - restatement: the question in one plain sentence the vet can confirm.
@@ -21,7 +22,8 @@ conditions, a setting, a period). Each open point becomes a question below.
   setting, such as pain after surgery, gets a setting block too). Each term is a MeSH heading
   or a text word.
 - related: conditions close to this one that the vet may also want.
-- treatments: the treatments of interest.
+- treatments: the treatments of interest: a drug, vaccine, device, procedure or diet.
+- healthy_treated: see "Healthy or research animals" below.
 - targets: what the database must cover to answer the question (each treatment, outcome or
   design the vet names).
 - questions: at most four multiple-choice questions about scope the vet's words don't settle
@@ -32,6 +34,24 @@ Each item has a source: vet (its evidence copied exactly from the vet's words), 
 evidence is the key of a paper the vet marked relevant), answer (its evidence is the vet's
 answer) or suggestion (your own). Code checks every vet and paper source and every MeSH
 heading; suggestions are shown to the vet as suggestions.
+
+## Healthy or research animals
+healthy_treated says whether studies of healthy or research animals given the treatment (dose
+or pharmacokinetic studies of a drug; safety or feasibility studies of a device, procedure or
+diet) are kept.
+1. No treatment in the question (risk factors, prognosis, diagnosis) → not_applicable.
+2. Otherwise, from what the vet's planned study is for: dose, schedule, pharmacokinetics,
+   tolerance, first safety, pilot or feasibility, or prevention in healthy animals → include;
+   efficacy or outcomes in patients, phase 2 or 3, a comparison of treatments → exclude.
+   Several purposes: the earliest stage decides.
+Source vet, with the words that show it as evidence. If the words don't show it, give your
+best value as a suggestion. Ask only when the source is suggestion: "Should the database
+include studies of healthy or research <species> given <the treatment>?" (Yes, include them |
+No, only <species> with <the condition>). It never changes the search blocks.
+Examples: "Pharmacokinetics of a new antiemetic in cats" → include; "A phase 3 trial of an
+analgesic after spaying" → exclude; "Feasibility of a cardiac occluder in dogs" → include;
+"Duration of immunity of a leptospirosis vaccine" → include; "Risk factors for gastric
+dilatation in dogs" → not_applicable.
 
 ## Rules
 - Search only for the species and the condition. Words for design, treatment or outcome

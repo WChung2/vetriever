@@ -42,13 +42,14 @@
     {% if r.summary %}<p>{{ r.summary }}</p>{% endif %}
     {% call collapsible("Why the screening " ~ ("dropped it" if r.decision == "off_topic" else ("set it aside" if r.decision == "aside" else ("marked it an overview" if r.decision == "lead" else "kept it"))) ~ ", and how it was found") %}
       {% call stack(gap=2) %}
-      {% if r.rule %}<p><b>Dropped:</b> {{ rules.get(r.rule, r.rule) }}</p>{% endif %}
+      {% if r.rule and r.decision != "aside" %}<p><b>Dropped:</b> {{ rules.get(r.rule, r.rule) }}</p>{% endif %}
       {% if r.confidence %}<p>Confidence <b>{{ r.confidence }}</b>: {{ r.confidence_why }}</p>{% endif %}
       {% if r.reasoning %}<p>{{ r.reasoning }}</p>{% endif %}
       {% for check, answer, quote in r.checks %}
         <p>{{ check_names.get(check, check) }}: <b>{{ answer_names.get(answer, answer | label) }}</b>{% if quote %} <q>{{ quote }}</q>{% endif %}</p>
       {% endfor %}
-      {% if r.decision == "aside" %}<p>Letters, comments and errata are set aside before screening.</p>{% endif %}
+      {% if r.decision == "aside" %}<p>{{ rules.get(r.rule) or "Letters, comments and errata are set aside before screening." }}</p>{% endif %}
+      {% if r.decision == "keep" and not r.considered %}<p>Not among those worth considering, so it is not taken in unless you approve it.</p>{% endif %}
       {% if r.found_by %}{{ caption("Found by " ~ (r.found_by | join("; "))) }}{% endif %}
       {{ caption(r.key ~ ((" · PMID " ~ r.pmid) if r.pmid else "") ~ ((" · " ~ r.doi) if r.doi else "")) }}
       {% endcall %}

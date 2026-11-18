@@ -14,6 +14,7 @@ from vet.extract import (
     STEPS,
     TABLE_MORE,
     TABLE_PART,
+    _gate_form,
     extract_document,
     form,
     form_fields,
@@ -360,6 +361,58 @@ def test_an_abstract_never_replaces_another_text(tmp_path):
         write_abstract(ABSTRACT, tmp_path)
     with pytest.raises(ValueError, match="no abstract"):
         write_abstract({**ABSTRACT, "abstract": ""}, tmp_path)
+
+
+GATE_TOPIC = {"screen": {"species": "dogs", "condition": "IMHA", "treatments": ["mycophenolate", "none named"]}}
+
+
+@pytest.mark.parametrize("setting, words", [
+    (None, " Healthy or research dogs that were themselves given a treatment of interest also count as yes: mycophenolate."),
+    ("include", " Healthy or research dogs that were themselves given a treatment of interest also count as yes: mycophenolate."),
+    ("exclude", None), ("not_applicable", None)])
+def test_the_gate_takes_healthy_dogs_only_where_the_search_keeps_them(setting, words):
+    topic = {"screen": GATE_TOPIC["screen"] | ({"healthy_treated": setting} if setting else {})}
+    gate = _gate_form(topic)
+    assert (words in gate) if words else ("Healthy or research" not in gate)
+
+
+def test_the_gate_with_no_treatment_named_says_so_plainly():
+    gate = _gate_form({"screen": {"species": "dogs", "condition": "IMHA", "treatments": ["none named"]}})
+    assert "given a treatment of interest also count as yes." in gate
+
+
+FULL = "the full text, which its licence does not allow sending: SEALED-SENTENCE\n"
+
+
+def test_a_full_text_that_may_not_be_sent_is_read_from_its_abstract(tmp_path):
+    """A stored full text whose licence doesn't allow sending it (a publisher's text-mining
+    copy): extraction sends only the abstract, kept beside it, and the full text stays."""
+    (tmp_path / "docs").mkdir()
+    full = tmp_path / "docs" / "PMID99999955.txt"
+    full.write_text(FULL, "utf-8")
+    fake = FakeGemini()
+    llm = LLM(fake, save_calls=False, corpus=tmp_path / "corpus")
+    reps = run_extract(["PMID99999955"], TOPIC, llm, tmp_path / "v.db", say=lambda line: None,
+                       abstracts={"PMID99999955": ABSTRACT}, abstract_only=frozenset({"PMID99999955"}))
+    sent = fake.held + [c["prompt"] for c in fake.calls]
+    assert reps[0].study and any("Sixty dogs were enrolled." in t for t in sent)
+    assert not any("SEALED-SENTENCE" in t for t in sent)               # never sent
+    assert full.read_text("utf-8") == FULL                             # left as it was
+    store = Store(tmp_path / "v.db", CB)
+    src = store.rows("sources")[0]
+    assert (src["access"], src["text_file"]) == ("abstract_only", "docs/PMID99999955.abstract.txt")
+    assert not [i for i in validate(store.tables(), CB, root=tmp_path) if i.check == "no_text"]
+
+
+def test_abstract_only_without_its_abstract_is_refused_before_anything_is_sent(tmp_path):
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "PMID99999955.txt").write_text(FULL, "utf-8")
+    fake = FakeGemini()
+    llm = LLM(fake, save_calls=False, corpus=tmp_path / "corpus")
+    with pytest.raises(ValueError, match="no abstract given"):
+        run_extract(["PMID99999955"], TOPIC, llm, tmp_path / "v.db", say=lambda line: None,
+                    abstract_only=frozenset({"PMID99999955"}))
+    assert fake.calls == [] and fake.held == []
 
 
 # -- results: one call per kind, then the tables no row cites ---------------------------------

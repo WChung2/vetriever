@@ -194,7 +194,7 @@ def test_the_lists_follow_your_decisions(client, db):
     tabs = views.records(db, TOPIC)["tabs"]
     assert (tabs["to_review"], tabs["approved"]) == (1, 2)
     html = client.get(f"/topics/{TOPIC}/review").text
-    assert "<b>1</b> article waits for your decision" in html and "Approve all 1" in html
+    assert "<b>1</b> article waits for your decision" in html and "Approve all" not in html
     decide(client, {"key": "1002", "action": "reject"})
     html = client.get(f"/topics/{TOPIC}/review").text               # nothing left: opens Approved
     assert 'aria-current="page">Approved by you' in html
@@ -270,7 +270,8 @@ def test_pages_load_nothing_from_outside(client, db):
         csp = r.headers["content-security-policy"]
         assert "default-src 'none'" in csp and "script-src 'self'" in csp
         assert "connect-src 'self'" in csp and "'unsafe" not in csp
-        assert r.headers["referrer-policy"] == "no-referrer"
+        assert r.headers["referrer-policy"] == "same-origin"           # links out: no referrer
+        assert '<meta name="referrer" content="same-origin">' in r.text    # a form keeps its Origin
         html = r.text
         scripts = re.findall(r"<script[^>]*>", html)
         assert scripts and all(re.fullmatch(r'<script (defer )?src="/(static|_fjkit)/[^"]+"( defer)?>', s)
@@ -538,15 +539,51 @@ def test_a_dropped_record_gets_no_confidence(client, db):
     assert "conf-high" not in client.get(f"/topics/{TOPIC}/review?view=dropped").text
 
 
-def test_the_most_confident_can_be_approved_in_one_click(tmp_path):
+def with_healthy_dogs(tmp_path) -> Path:
+    """ranked_db, plus a study of healthy dogs given the drug (medium, worth considering)."""
     db = ranked_db(tmp_path)
+    con = sqlite3.connect(db)
+    with con:
+        con.execute("INSERT INTO records (key, title, abstract, year) VALUES ('pk', 'FIXTURE "
+                    "carprofen in healthy dogs', 'FIXTURE dogs after surgery, client-owned dogs', '2022')")
+        con.execute("INSERT INTO screening (topic, key, decision, rule, flags, summary, design, "
+                    "answers, round, date) VALUES (?, 'pk', 'keep', '', 'research_animals', 's', "
+                    "'prospective', ?, 1, 'd')", (TOPIC, json.dumps(answers("no", "healthy_treated"))))
+    con.close()
+    return db
+
+
+def test_those_worth_considering_are_approved_in_one_click(tmp_path):
+    db = with_healthy_dogs(tmp_path)
     c = TestClient(ui.create_app(db, db.parent), base_url="http://127.0.0.1")
-    assert "Approve the 4 high-confidence" in c.get(f"/topics/{TOPIC}/review?view=to_review").text
-    post(c, f"/topics/{TOPIC}/decide", {"all": "1", "action": "approve", "level": "high"})
+    html = c.get(f"/topics/{TOPIC}/review?view=to_review").text
+    assert "Approve the 5 worth considering" in html and "Approve all" not in html
+    assert '<input type="hidden" name="level" value="considered">' in html    # the button sends it
+    assert "The other 2 (low confidence" in html
+    assert "Not among those worth considering" in html              # on mid and low
+    post(c, f"/topics/{TOPIC}/decide", {"all": "1", "action": "approve", "level": "considered"})
     left = {r[0] for r in sqlite3.connect(db).execute("SELECT key FROM screening WHERE approved = ''")}
-    assert left == {"mid", "low"}
+    assert left == {"mid", "low"}                                   # pk (healthy dogs) went in
     bad = post(c, f"/topics/{TOPIC}/decide", {"all": "1", "action": "approve", "level": "nope"})
     assert bad.status_code == 400
+
+
+def test_a_search_that_leaves_healthy_dogs_out_does_not_approve_them(tmp_path, monkeypatch):
+    db = with_healthy_dogs(tmp_path)
+    t = views.topic_file(TOPIC)
+    monkeypatch.setattr(views, "topic_file", lambda n: t | {"screen": t.get("screen", {}) | {"healthy_treated": "exclude"}})
+    assert "pk" not in views.keys_in(db, TOPIC, "to_review", views.CONSIDERED)
+    assert len(views.keys_in(db, TOPIC, "to_review", views.CONSIDERED)) == 4     # the high ones
+    assert views.record(db, TOPIC, "pk")["considered"] is False                 # its card says so
+    assert next(r for r in views.records(db, TOPIC)["rows"] if r["key"] == "pk")["considered"] is False
+
+
+def test_the_command_line_approves_those_worth_considering(tmp_path):
+    from vet import cli
+    db = with_healthy_dogs(tmp_path)
+    cli.main(["--db", str(db), "list", TOPIC, "--approve-all"])
+    left = {r[0] for r in sqlite3.connect(db).execute("SELECT key FROM screening WHERE approved = ''")}
+    assert left == {"mid", "low"}
 
 
 def test_next_goes_to_the_top_of_the_list(tmp_path, monkeypatch):

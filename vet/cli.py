@@ -230,8 +230,10 @@ def cmd_list(args):
     from . import approve
     from .search import connect
     db = connect(args.db)
-    if args.approve_all:
-        print(f"approved {approve.approve(args.topic, db)} kept records")
+    if args.approve_all:                 # those worth considering, as the screen's button does
+        from .views import CONSIDERED, keys_in
+        worth = keys_in(args.db, args.topic, "to_review", CONSIDERED)
+        print(f"approved {approve.approve(args.topic, db, worth)} kept records worth considering")
     kept, details = approve.write_list(args.topic, db, args.db.parent / "reports")
     print(f"the list: {kept}\nreasoning, flags and dropped records: {details}")
 
@@ -396,7 +398,9 @@ def main(argv=None):
     se.add_argument("--budget", type=float, help="what this search may spend, in USD")
     se.add_argument("--widen", action="store_true", help="run the proposed next round")
     se.set_defaults(run=cmd_search)
-    ls = sub.add_parser("list", help="step 6: the kept list for the vet; --approve-all approves it")
+    ls = sub.add_parser("list", help="step 6: the kept list for the vet; --approve-all approves "
+                                     "those worth considering (high confidence, and healthy "
+                                     "animals given a treatment)")
     ls.add_argument("topic")
     ls.add_argument("--approve-all", action="store_true")
     ls.set_defaults(run=cmd_list)

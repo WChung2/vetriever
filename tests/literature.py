@@ -1,5 +1,6 @@
 """A tiny fake literature (offline, free): records, and a PubMed that evaluates the queries
-code builds ("x"[Mesh], word[tiab], AND / OR / NOT, parentheses, 123[pmid])."""
+code builds ("x"[Mesh], word[tiab], AND / OR / NOT, parentheses, 123[pmid],
+2000:3000[dp])."""
 import re
 
 from vet import connectors as c
@@ -21,6 +22,9 @@ class Literature:
             return term.lower() in [m.lower() for m in r.mesh.split("|")]
         if field.lower() == "pmid":
             return r.pmid == term
+        if field.lower() == "dp":                     # 2000:3000[dp], publication years
+            first, last = (int(y) for y in term.split(":"))
+            return r.year[:4].isdigit() and first <= int(r.year[:4]) <= last
         text = f"{r.title} {r.abstract}".lower()
         word = term.lower()
         if word.endswith("*"):
@@ -81,6 +85,7 @@ class Literature:
         return self
 
 
-def rec(pmid: str, title: str, mesh: str = "", abstract: str = "", types: str = "Journal Article"):
+def rec(pmid: str, title: str, mesh: str = "", abstract: str = "", types: str = "Journal Article",
+        year: str = "2020"):
     return c.Record("pubmed", pmid=pmid, title=title, abstract=abstract or title, mesh=mesh,
-                    pub_types=types, year="2020")
+                    pub_types=types, year=year, journal="J Vet Intern Med")

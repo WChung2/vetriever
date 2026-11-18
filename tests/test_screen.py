@@ -6,7 +6,15 @@ import pytest
 
 from vet.codebook import Codebook
 from vet.llm import LLM, FakeGemini
-from vet.screen import SCHEMA, confidence, decide, screen, system_prompt
+from vet.screen import (
+    SCHEMA,
+    confidence,
+    considered,
+    decide,
+    healthy_setting,
+    screen,
+    system_prompt,
+)
 from vet.settings import ROOT
 
 CB = Codebook()
@@ -155,6 +163,35 @@ def said(cond="yes", animals="patients", cq="immune-mediated hemolytic anemia", 
 def test_confidence_comes_from_what_the_record_shows(answers, flags, level):
     got, why = confidence(answers, flags, ON_TOPIC)
     assert got == level and why
+
+
+@pytest.mark.parametrize("answers, flags, worth", [
+    (said(), [], True),                                                     # high
+    (said(cond="no", animals="healthy_treated"), ["research_animals"], True),   # dose, PK studies
+    (said(cond="no", animals="healthy_treated"), ["research_animals", "title_only"], False),
+    (said(cond="related"), ["related_condition"], False),
+    (said(animals="survey"), ["survey"], False),
+    (said(cq="a sentence the record does not hold"), [], False),
+    (said(), ["title_only"], False),
+    (said(cond="unclear"), [], False),
+    (said(cond="no"), ["unbacked_drop"], False),
+    ({}, ["not_answered"], False),
+])
+def test_only_confident_records_and_healthy_dogs_treated_are_worth_considering(answers, flags, worth):
+    assert considered(answers, flags, ON_TOPIC) is worth
+
+
+@pytest.mark.parametrize("healthy, worth", [("include", True), ("exclude", False), ("not_applicable", False)])
+def test_healthy_dogs_treated_count_only_where_the_search_keeps_them(healthy, worth):
+    treated = said(cond="no", animals="healthy_treated")
+    assert considered(treated, ["research_animals"], ON_TOPIC, healthy) is worth
+    assert considered(said(), [], ON_TOPIC, healthy) is True                 # high: always
+
+
+@pytest.mark.parametrize("screen, value", [({}, "include"), ({"healthy_treated": "exclude"}, "exclude"),
+                                           ({"healthy_treated": "nonsense"}, "include")])
+def test_a_search_made_before_the_setting_keeps_healthy_dogs(screen, value):
+    assert healthy_setting({"screen": screen}) == value
 
 
 @pytest.mark.parametrize("flag", ["unbacked_drop", "not_answered"])

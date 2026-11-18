@@ -3,8 +3,11 @@
 The topic's `[[terms]]` are grouped in blocks (the species, the condition): OR inside a
 block, AND between blocks. PubMed gets `"heading"[Mesh]` and `word[tiab]`; Europe PMC gets the
 same text words in titles and abstracts plus `NOT SRC:MED`, to reach records PubMed doesn't
-have. Records are merged on PMID, then DOI. Everything lives in the database beside the
-codebook tables:
+have. Records are merged on PMID, then DOI. Every query asks only for papers published from
+`pipeline.published_from` on. Before screening, records are set aside unscreened, each with
+its reason: letters and errata; a second copy of a paper already found; a record with too little
+to judge (no year, no abstract, not a paper in a journal); and papers older than that year
+(follow-ups can reach them). Everything lives in the database beside the codebook tables:
 
 - records    one row per record, whatever found it (title, abstract, MeSH, types, IDs)
 - found      which round found which record, and how (pubmed, europepmc, term:…, references:…)
@@ -15,12 +18,13 @@ codebook tables:
 import json
 import re
 import sqlite3
+import unicodedata
 from dataclasses import asdict
 from datetime import date
 from pathlib import Path
 
 from . import connectors as c
-from .settings import DB
+from .settings import DB, settings
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS records (key TEXT PRIMARY KEY, pmid TEXT, doi TEXT, pmcid TEXT,
@@ -48,6 +52,13 @@ LEADS = {"review", "systematic review", "meta-analysis", "practice guideline", "
 ASIDE = {"comment", "letter", "editorial", "published erratum", "erratum", "retraction notice",
          "retraction of publication", "news", "letter to the editor"}
 PUBMED_MAX = 9999
+# not a paper in a journal, as PubMed, Europe PMC and OpenAlex name them: preprints, theses,
+# books and chapters, congress abstract books, meeting calendars ("other": textbook chapters)
+NOT_JOURNAL = {"preprint", "dissertation", "thesis", "book", "book-chapter", "chapter-article",
+               "book-review", "congress", "conference proceedings", "conference-paper",
+               "conference-abstract", "meeting-report", "meeting report", "abstract", "calendar",
+               "overall", "other", "news", "paratext", "dataset", "report", "reference-entry"}
+SAME_TITLE_WORDS = 6     # a shorter title ("Immune-mediated hemolytic anemia") is too generic to match on
 
 
 def connect(path: Path = DB) -> sqlite3.Connection:
@@ -90,9 +101,26 @@ def europepmc_term(t: dict) -> str:
     return f"TITLE:{w} OR ABSTRACT:{w}"
 
 
+def first_year() -> int:
+    """The first publication year searched and screened; 0 means no limit."""
+    return int(settings()["pipeline"].get("published_from") or 0)
+
+
+def dated(q: str, service: str = "pubmed") -> str:
+    """The query limited to papers published from first_year() on."""
+    y = first_year()
+    if not (y and q):
+        return q
+    return f"({q}) AND {y}:3000[dp]" if service == "pubmed" else f"({q}) AND PUB_YEAR:[{y} TO 3000]"
+
+
 def query(terms: list[dict], service: str = "pubmed", outside_pubmed: bool = True) -> str:
-    """OR inside a block, AND between blocks. Europe PMC uses text words only, and by default
-    only reaches what PubMed doesn't have."""
+    """OR inside a block, AND between blocks, from first_year() on. Europe PMC uses text words
+    only, and by default only reaches what PubMed doesn't have."""
+    return dated(_query(terms, service, outside_pubmed), service)
+
+
+def _query(terms: list[dict], service: str = "pubmed", outside_pubmed: bool = True) -> str:
     one = pubmed_term if service == "pubmed" else europepmc_term
     parts = []
     for ts in blocks(terms).values():
@@ -109,10 +137,10 @@ def term_only(terms: list[dict], t: dict) -> str:
     rest = [o for o in terms if o["block"] == t["block"] and o is not t]
     q = f"({pubmed_term(t)})"
     if others:
-        q += " AND " + query(others)
+        q += " AND " + _query(others)
     if rest:
         q += " NOT (" + " OR ".join(pubmed_term(o) for o in rest) + ")"
-    return q
+    return dated(q)
 
 
 def bad_term_check(t: dict) -> str:
@@ -197,7 +225,7 @@ def log_query(db: sqlite3.Connection, topic: str, rnd: int, service: str, q: str
 
 def kind_of(pub_types: str) -> str:
     """lead (reviews, guidelines), aside (letters, comments, errata) or screen."""
-    types = {t.strip().lower() for t in pub_types.split("|") if t.strip()}
+    types = _types(pub_types)
     if types & ASIDE:
         return "aside"
     if types & LEADS:
@@ -228,17 +256,97 @@ def known_check(topic: dict, found: set[str]) -> dict[str, bool]:
     return {k: k in found for k in topic.get("known", [])}
 
 
+def _year(r) -> int:
+    try:
+        y = str(r["year"] or "")[:4]
+    except (KeyError, IndexError):      # a record not stored
+        return 0
+    return int(y) if y.isdigit() else 0
+
+
+def too_old(r) -> bool:
+    """Published before first_year(). A record with no year is screened."""
+    return 0 < _year(r) < first_year()
+
+
+def _plain(t: str) -> str:
+    t = unicodedata.normalize("NFKD", t or "").encode("ascii", "ignore").decode().lower()
+    return re.sub(r"[^a-z0-9]+", " ", t).strip()
+
+
+def same_paper(db: sqlite3.Connection, topic_name: str) -> dict[str, str]:
+    """Records found for this topic that are a second copy of another: key -> the copy kept.
+    Two records are one paper when they share a PMCID, or carry the same title (at least
+    SAME_TITLE_WORDS words) in the same journal, at most a year apart; PubMed and Europe PMC
+    often hold one paper under two keys when only one copy has the DOI. The copy kept is the one
+    already screened, then one with an abstract, then one with a PMID, then the longer abstract."""
+    rows = db.execute(
+        "SELECT r.*, s.key IS NOT NULL AS screened FROM records r LEFT JOIN screening s "
+        "ON s.topic = ? AND s.key = r.key WHERE r.key IN (SELECT key FROM found WHERE topic = ?)",
+        (topic_name, topic_name)).fetchall()
+    rows.sort(key=lambda r: (not r["screened"], not (r["abstract"] or "").strip(), not r["pmid"],
+                             -len(r["abstract"] or ""), r["key"]))
+    by_pmc, by_title, out = {}, {}, {}
+    for r in rows:
+        title, y = (_plain(r["title"]), _plain(r["journal"])), _year(r)
+        twin = by_pmc.get(r["pmcid"]) if r["pmcid"] else None
+        long = len(title[0].split()) >= SAME_TITLE_WORDS
+        if twin is None and long and y:
+            twin = next((k for ky, k in by_title.get(title, []) if abs(ky - y) <= 1), None)
+        if twin is not None:
+            out[r["key"]] = twin
+            continue
+        if r["pmcid"]:
+            by_pmc[r["pmcid"]] = r["key"]
+        if long and y:
+            by_title.setdefault(title, []).append((y, r["key"]))
+    return out
+
+
+def _named(key: str) -> str:
+    return f"PMID {key}" if key.isdigit() else key
+
+
+def _types(pub_types: str) -> set[str]:
+    return {t.strip().lower() for t in (pub_types or "").split("|") if t.strip()}
+
+
+def aside_why(r, twins: dict[str, str]) -> tuple[str, str]:
+    """Why a record is set aside unscreened, as (rule, the reason in words); ("", "") when it
+    is screened. Too little to judge: no year, no abstract, or not a paper in a journal."""
+    if kind_of(r["pub_types"]) == "aside":
+        return "letter", ""
+    if r["key"] in twins:
+        return "same_paper", f"The same paper as {_named(twins[r['key']])}, screened once."
+    if not _year(r):
+        return "no_year", "No publication year given: too little to judge it by."
+    if too_old(r):
+        return "too_old", f"Published {_year(r)}; the search starts in {first_year()}."
+    if not (r["abstract"] or "").strip():
+        return "no_abstract", "No abstract: too little to judge it by."
+    kind = sorted(_types(r["pub_types"]) & NOT_JOURNAL)
+    if kind:
+        return "not_journal", f"Not a paper in a journal ({kind[0]})."
+    if not (r["journal"] or "").strip():
+        return "not_journal", "No journal named."
+    return "", ""
+
+
 def to_screen(db: sqlite3.Connection, topic_name: str) -> list[dict]:
-    """Records found for this topic and not screened yet, letters and comments left aside."""
+    """Records found for this topic and not screened yet; the rest are set aside unscreened,
+    each with its reason (`aside_why`)."""
     rows = db.execute(
         "SELECT r.* FROM records r WHERE r.key IN (SELECT key FROM found WHERE topic = ?) "
         "AND r.key NOT IN (SELECT key FROM screening WHERE topic = ?) ORDER BY r.key",
         (topic_name, topic_name)).fetchall()
+    twins = same_paper(db, topic_name) if rows else {}
     out = []
     for r in rows:
-        if kind_of(r["pub_types"]) == "aside":
-            save_screening(db, topic_name, 0, [{"key": r["key"], "decision": "aside", "rule": "",
-                                                "flags": [], "answers": {}}])
+        rule, why = aside_why(r, twins)
+        if rule:
+            save_screening(db, topic_name, 0, [{"key": r["key"], "decision": "aside",
+                                                "rule": "" if rule == "letter" else rule,
+                                                "flags": [], "answers": {"summary": why} if why else {}}])
             continue
         out.append({"key": r["key"], "year": r["year"], "title": r["title"],
                     "abstract": r["abstract"], "subject_terms": r["mesh"],

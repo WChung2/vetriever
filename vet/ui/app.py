@@ -50,7 +50,9 @@ CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' 
        "connect-src 'self'; font-src 'self'; form-action 'self'; base-uri 'none'; "
        "frame-ancestors 'none'")
 HEADERS = {"Content-Security-Policy": CSP, "X-Content-Type-Options": "nosniff",
-           "Referrer-Policy": "no-referrer", "X-Frame-Options": "DENY",
+           # same-origin, not no-referrer: under no-referrer Chrome sends "Origin: null" with a
+           # plain form's POST, and the guard below refuses it; links out still send nothing
+           "Referrer-Policy": "same-origin", "X-Frame-Options": "DENY",
            "Cache-Control": "no-store", "Cross-Origin-Resource-Policy": "same-origin"}
 DESIGNS = {"randomised_trial": "Randomised trial", "prospective": "Prospective",
            "retrospective": "Retrospective", "case_series": "Case series",
@@ -76,7 +78,9 @@ NOTES = {"busy": "Another step is running: wait for it to finish, then try again
          "too_low": "That budget doesn't cover this step: see what it needs below.",
          "stale": "That page was out of date. This is where the search is now.",
          "last_round": "The Planner has had its last round: agree this search, or ask a new "
-                       "question."}
+                       "question.",
+         "revise_first": "Your answers change the search, and only the Planner can redraw it: "
+                         "press Revise with my answers, check its new draft, then agree."}
 KINDS = {"prospective_trial": "Prospective trial", "retrospective_cohort": "Retrospective cohort",
          "case_series": "Case series", "other": "Other"}
 
@@ -240,6 +244,10 @@ def create_app(db: Path = DB, corpus: Path = CORPUS, backend=None) -> FastAPI:
             return back(name, "stale")
         answers = plan.answers_from(state, lambda field: form.get(field, ""))
         if go == "agree":
+            # agreeing keeps the draft as shown: answers to its questions (or a note) would be
+            # lost, so they go through Revise, unless no round is left
+            if answers["question"] and not p["last_round"]:
+                return back(name, "revise_first")
             return run(name, "Agreeing the search", jobs.agree(tools, name, answers), form)
         if go == "revise":
             if p["last_round"]:
@@ -298,7 +306,7 @@ def create_app(db: Path = DB, corpus: Path = CORPUS, backend=None) -> FastAPI:
         ctx |= {"q": q, "flag": flag, "design": design, "level": level, "rules": views.RULES,
                 "data": views.records(db, name, view, q, flag, design, page_no, level),
                 "b": views.built(db, corpus, name)}
-        ctx["high_waiting"] = len(views.keys_in(db, name, "to_review", "high")) \
+        ctx["considered_waiting"] = len(views.keys_in(db, name, "to_review", views.CONSIDERED)) \
             if ctx["data"]["tabs"]["to_review"] else 0
         if request.headers.get("hx-request") and request.headers.get("hx-target") == "records":
             return page(request, "review/_records.html", **ctx)
@@ -329,7 +337,7 @@ def create_app(db: Path = DB, corpus: Path = CORPUS, backend=None) -> FastAPI:
             if whole is None:
                 raise HTTPException(400, "Only approving or undoing can apply to a whole list.")
             level = form.get("level", "")
-            if level and level not in views.LEVELS:
+            if level and level not in (*views.LEVELS, views.CONSIDERED):
                 raise HTTPException(400, "Unknown confidence level.")
             keys = views.keys_in(db, name, whole, level)
         else:

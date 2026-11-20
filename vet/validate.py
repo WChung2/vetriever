@@ -44,6 +44,7 @@ PRIMARY_KEY = {"sources": ("source_id",), "study_sources": ("ID", "source_id"),
                "people": ("ID", "person_no"), "breeds": ("ID", "arm_id", "Breed"),
                "definitions": ("source_id", "ID", "term"),
                "conflicts": ("ID", "table", "row_key", "field", "secondary_source_id"),
+               "study_links": ("ID", "linked_ID"),
                # a value may have several evidence rows: one per document, or one per part
                # of a list (e.g. a quote for each country)
                "evidence": ("ID", "table", "row_key", "field", "source_id", "quote", "location")}
@@ -80,6 +81,9 @@ LINKS = [
      "unlinked_source"),
     ("conflicts", ("ID", "secondary_source_id"), "study_sources", ("ID", "source_id"),
      "unlinked_source"),
+    ("study_links", ("ID",), "studies", ("ID",), "orphan"),
+    ("study_links", ("linked_ID",), "studies", ("ID",), "orphan"),
+    ("study_links", ("source_id",), "sources", ("source_id",), "orphan"),
 ]
 # tables whose values evidence rows support, and how their row_key is built; topic_fields
 # rows are supported too, with row_key = the topic (see _Run.evidence)
@@ -158,6 +162,22 @@ def _words(n: int) -> list[str]:
 # "87 400" is one number, but in a table row "2.6 143.7", "± 24 126" and "138–146 144.9" are two:
 # a space joins two digit groups only when the first starts a number (not after a decimal point,
 # ±, a minus or a range dash) and the second ends it (no decimal after it)
+# words a passage needs before it can say whether an adverse event was fatal
+FATAL = re.compile(r"fatal|\bdied|\bdie\b|death|\bdead\b|euthan|surviv|mortalit|lethal|alive|"
+                   r"discharged|\bkilled|recover|resolved|controlled", re.IGNORECASE)
+# a numbered label (t3, T2, V1, visit 3), as opposed to a time written short (D14, 6h, wk 2)
+LABEL = re.compile(r"\s*(?:(?P<short>[A-Za-z]{1,2})\s?-?|(?:time ?point|visit|period|phase|sample|"
+                   r"session|cycle)\s+)(?P<n>\d+)\s*", re.IGNORECASE)
+TIME_LETTERS = {"d", "h", "hr", "w", "wk", "m", "mo", "y", "yr", "s"}
+
+
+def timepoint_label(value: str, written: str) -> bool:
+    """Is a timepoint's number only the number of a label, such as 3 in 't3'?"""
+    m = LABEL.fullmatch(written or "")
+    return bool(value and m and m["n"] == value
+                and (m["short"] or "").lower() not in TIME_LETTERS)
+
+
 THOUSANDS = re.compile(r"(?<![\d.±\-–(])(?<![\d.±\-–(]\s)(\d{1,3})\s(\d{3})(?![\d.])")
 
 
@@ -261,8 +281,8 @@ class _Run:
         bad = ""
         if name == "source_id" and not SOURCE_ID.fullmatch(v):
             bad = "source_id does not follow the key rules"
-        elif name == "ID" and not STUDY_ID.fullmatch(v):
-            bad = "ID must be VET-<n>"
+        elif name in ("ID", "linked_ID") and not STUDY_ID.fullmatch(v):
+            bad = f"{name} must be VET-<n>"
         elif name in ("arm_id", "reference_arm_id") and not re.fullmatch(re.escape(sid) + r"-A[1-9]\d*", v):
             bad = f"{name} must be <ID>-A<n> of this row's study"
         elif name == "dose_id" and not re.fullmatch(re.escape(row.get("arm_id", "")) + r"-D[1-9]\d*", v):
@@ -412,38 +432,13 @@ class _Run:
             elif f.evidence == "location" and not any(ev.get("location") for ev in evs):
                 self.add("location_missing", table, i, row, f.name, "evidence row has no location")
 
-    def values_in_quotes(self):
-        """Each copied value (and each number) must be in one of its own quotes."""
-        quotes = defaultdict(list)
-        for ev in self.t["evidence"]:
-            if ev.get("quote"):
-                quotes[_key(ev, CELL)].append(ev["quote"])
-        for key, (f, value, table, i, row) in self._supported().items():
-            if not value or not quotes.get(key) or f.type == "criteria" or not (
-                    f.kind == "T" or f.type in ("integer", "number", "year", "date")):
-                continue
-            items = value.split("|") if f.type == "pipe_list" else [value]
-            missing = [x for x in items if not any(_in_quote(x, f.type, q) for q in quotes[key])]
-            if missing:
-                self.add("value_not_in_quote", table, i, row, f.name,
-                         f"{missing[0][:60]!r} is not in its quote")
-        # a denominator often comes from a table's header, so the arm's or study's own
-        # (quoted) size also counts
-        sizes = defaultdict(set)
-        for r in self.t["arms"]:
-            sizes[r.get("ID", ""), r.get("arm_id", "")] |= {r.get("n_assigned"), r.get("n_analysed")}
-        for r in self.t["studies"]:
-            sizes[r.get("ID", ""), ""] |= {r.get(c) for c in ("n_enrolled", "n_randomised",
-                                                               "n_analysed")}
+    def counts_hold(self):
+        """A result row cannot count more events than animals. Stored numbers and dates are not
+        looked for in the quoted text (decisions.md, 2026-11-19 and 2026-11-20): a rule that
+        compares a number with words flagged right values by the thousand ("Eighteen dogs",
+        4.20, "all dogs") and, where it emptied them, removed them. The reader quotes the
+        passage of each value instead, and a person or a second reader judges it."""
         for i, row in self.rows("results"):
-            quote = row.get("as_written", "")
-            for name in RESULT_NUMBERS:
-                v = row.get(name, "")
-                if name == "n" and v in sizes[row.get("ID", ""), row.get("arm_id", "")]:
-                    continue
-                if v and quote and not _in_quote(v.lstrip("-<>=≤≥ "), "number", quote):
-                    self.add("value_not_in_quote", "results", i, row, name,
-                             f"{v!r} is not in as_written")
             n, events = row.get("n", ""), row.get("events", "")
             if n.isdigit() and events.isdigit() and int(events) > int(n):
                 self.add("events_more_than_n", "results", i, row, "events",
@@ -508,6 +503,58 @@ class _Run:
                     self.add("not_applicable_filled", "studies", i, row, name,
                              "listed in not_applicable but filled")
 
+    # -- values that can't be right, whatever the document says --------------------------
+    def plausible(self):
+        for i, row in self.rows("results"):
+            p = re.sub(r"^[<>=≤≥\s]+", "", row.get("p_value", ""))
+            if NUMBER.fullmatch(p) and not 0 <= float(p) <= 1:
+                self.add("p_value_range", "results", i, row, "p_value",
+                         f"{row['p_value']!r}: a p value lies between 0 and 1")
+            v, unit = row.get("value", ""), row.get("value_unit", "").lower()
+            if row.get("statistic_type") == "proportion" and NUMBER.fullmatch(v):
+                top = 100 if ("%" in unit or "percent" in unit) else 1 if not unit else None
+                if top and not 0 <= float(v) <= top:
+                    self.add("proportion_range", "results", i, row, "value",
+                             f"{v} is a proportion {'in %' if top == 100 else 'with no unit'}: "
+                             f"0 to {top}")
+            if row.get("ae_fatal") and row.get("as_written") and not FATAL.search(row["as_written"]):
+                self.add("ae_fatal_unsupported", "results", i, row, "ae_fatal",
+                         f"{row['ae_fatal']!r}, but its passage says nothing about death or "
+                         "survival; empty when the document doesn't say")
+            if timepoint_label(row.get("timepoint_value", ""), row.get("timepoint_as_written", "")):
+                self.add("timepoint_from_label", "results", i, row, "timepoint_value",
+                         f"{row['timepoint_as_written']!r} is a label, not a time")
+        for i, row in self.rows("arm_doses"):
+            lo, hi = row.get("dose_value", ""), row.get("dose_value_max", "")
+            if NUMBER.fullmatch(lo) and NUMBER.fullmatch(hi) and float(hi) < float(lo):
+                self.add("dose_range", "arm_doses", i, row, "dose_value_max",
+                         f"range {lo} to {hi}: the upper end is below the lower")
+            if row.get("dose_statistic") and not lo:
+                self.add("missing_value", "arm_doses", i, row, "dose_statistic",
+                         "says what dose_value is, but dose_value is empty")
+
+    def study_links(self):
+        """A link joins two different studies, once; a relation other than distinct rests on
+        a document of one of them, in its own words (checked against its text with the
+        other verbatim fields)."""
+        docs = defaultdict(set)
+        for r in self.t["study_sources"]:
+            docs[r.get("ID", "")].add(r.get("source_id", ""))
+        number = lambda sid: int(sid[4:]) if STUDY_ID.fullmatch(sid) else 0
+        for i, row in self.rows("study_links"):
+            a, b = row.get("ID", ""), row.get("linked_ID", "")
+            if a and b and number(a) >= number(b):
+                self.add("link_order", "study_links", i, row, "linked_ID",
+                         "ID must be the lower VET number, linked_ID the higher, and not the same")
+            if row.get("relation") in ("", "distinct"):
+                continue
+            if not (row.get("source_id") and row.get("statement_verbatim")):
+                self.add("link_unsupported", "study_links", i, row, "statement_verbatim",
+                         f"{row['relation']} needs the document's words and its source_id")
+            elif self.source_id is None and docs and row["source_id"] not in docs[a] | docs[b]:
+                self.add("link_unsupported", "study_links", i, row, "source_id",
+                         f"{row['source_id']} is not a document of {a} or {b}")
+
 
 def validate(tables: dict, cb: Codebook, source_id: str | None = None,
              headers: dict | None = None, root: Path | None = None) -> list[Issue]:
@@ -526,10 +573,12 @@ def validate(tables: dict, cb: Codebook, source_id: str | None = None,
     if source_id:
         run.document_scope()
     run.evidence()
-    run.values_in_quotes()
+    run.counts_hold()
     if root:
         run.documents_text(root)
     run.applicability()
+    run.plausible()
+    run.study_links()
     return run.issues
 
 

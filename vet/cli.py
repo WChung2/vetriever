@@ -33,6 +33,35 @@ def cmd_templates(args):
     print("templates/ and codebook.md match codebook.csv")
 
 
+def cmd_tidy(args):
+    from .store import Store
+    from .tidy import tidy
+    store = Store(args.db)
+    try:
+        rep = tidy(store)
+    finally:
+        store.close()
+    print(rep.line())
+    for dose_id, why in rep.left[:args.show]:
+        print(f"  {dose_id}: {why}")
+    if len(rep.left) > args.show:
+        print(f"  … and {len(rep.left) - args.show} more (--show N lists more)")
+
+
+def cmd_link(args):
+    from .links import link
+    from .store import Store
+    store = Store(args.db)
+    try:
+        row = link(store, args.study, args.other, args.relation, args.source or "",
+                   args.words or "", args.where or "", args.by, args.note or "")
+    except ValueError as e:
+        sys.exit(f"not stored: {e}")
+    finally:
+        store.close()
+    print(f"stored: {row['ID']} and {row['linked_ID']} are {row['relation']}")
+
+
 def cmd_check(args):
     if args.folder:
         folder = Path(args.folder).resolve()
@@ -266,6 +295,34 @@ def cmd_extract(args):
           f"{args.db}; problems in its extraction_log table")
     print(_spent(llm, before))
 
+def cmd_read(args):
+    """Stored studies read again in place: VET ids, or every study of a topic."""
+    from .llm import LLM, BudgetExceeded
+    from .reading import reread
+    from .search import connect
+    ids = list(args.ids)
+    if args.topic:
+        ids += [r[0] for r in connect(args.db).execute(
+            "SELECT ID FROM study_topics WHERE topic = ? ORDER BY CAST(substr(ID, 5) AS INTEGER)",
+            (args.topic,))]
+    if not ids:
+        sys.exit("give study ids (VET-12 ...) or --topic")
+    llm = LLM()
+    before, cap = llm.ledger.spent, llm.ledger.cap
+    if args.max_usd is not None:
+        llm.ledger.cap = min(cap, before + args.max_usd)
+    try:
+        done = reread(list(dict.fromkeys(ids)), llm, args.db, workers=args.workers)
+    except (ValueError, BudgetExceeded) as e:
+        sys.exit(str(e))
+    finally:
+        llm.ledger.cap = cap
+    print(f"{done['read']} studies read again and replaced in {args.db}; {done['failed']} failed and "
+          f"kept their stored reading; {done['skipped']} had no text; {done['already done']} were "
+          "done before (reread_done.json)")
+    print(_spent(llm, before))
+
+
 def cmd_export(args):
     from .store import Store
     n = Store(args.db).export(Path(args.folder))
@@ -360,6 +417,21 @@ def main(argv=None):
     c.add_argument("folder", nargs="?", help="a folder of tables, e.g. corpus/out/<source_id>; "
                    "default: the database, plus a list of possible duplicates to review")
     c.set_defaults(run=cmd_check)
+    t = sub.add_parser("tidy", help="repairs by rule (free, local): citation details from the "
+                       "search records, dose numbers from the written dose, repeated rows")
+    t.add_argument("--show", type=int, default=20, help="written doses left for a person to list")
+    t.set_defaults(run=cmd_tidy)
+    lk = sub.add_parser("link", help="record how two studies relate: same_experiment, "
+                        "shared_animals (with a document's words) or distinct (with a note)")
+    lk.add_argument("study")
+    lk.add_argument("other")
+    lk.add_argument("relation", choices=("same_experiment", "shared_animals", "distinct"))
+    lk.add_argument("--source", help="the document whose words show the relation")
+    lk.add_argument("--words", help="those words, verbatim")
+    lk.add_argument("--where", help="where in the document (section, page)")
+    lk.add_argument("--by", choices=("curator", "vet"), default="curator")
+    lk.add_argument("--note", help="why, in your own words (needed for distinct)")
+    lk.set_defaults(run=cmd_link)
     i = sub.add_parser("import", help="add a folder of tables to the database")
     i.add_argument("folder")
     i.set_defaults(run=cmd_import)
@@ -381,6 +453,13 @@ def main(argv=None):
     x.add_argument("topic", help="a topic in topics/ (needs its [screen] species and condition)")
     x.add_argument("ids", nargs="+", help="PMIDs, DOIs or source_ids")
     x.set_defaults(run=cmd_extract)
+    rd = sub.add_parser("read", help="read stored studies again, sentence by sentence and cell by "
+                        "cell, and replace their reading in place (paid); each keeps its ID")
+    rd.add_argument("ids", nargs="*", help="study ids, e.g. VET-12 VET-40")
+    rd.add_argument("--topic", help="every study of this topic")
+    rd.add_argument("--max-usd", type=float, help="stop this run after this much Gemini cost")
+    rd.add_argument("--workers", type=int, default=3, help="studies read at the same time")
+    rd.set_defaults(run=cmd_read)
     e = sub.add_parser("export", help="write the database out as CSV tables")
     e.add_argument("folder", nargs="?", default=str(CORPUS / "merged"))
     e.set_defaults(run=cmd_export)

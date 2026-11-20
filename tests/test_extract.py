@@ -10,6 +10,7 @@ import pytest
 from tests import fixture
 from vet.codebook import TABLES, Codebook
 from vet.extract import (
+    NOT_EXTRACTED,
     REPAIR_BATCH,
     STEPS,
     TABLE_MORE,
@@ -125,6 +126,11 @@ class Fake:
         if kind == "repair":
             return self.repair(prompt, schema) if self.repair else {}
         answer = copy.deepcopy(ANSWERS[kind])
+        if kind == "arms" and "not_a_dose" in props:   # the dose checklist: each dose cites its line
+            ids = props["not_a_dose"]["items"]["enum"]
+            for arm in answer["arms"]:
+                for dose in arm.get("arm_doses", []):
+                    dose["sentences"] = ids[:1]
         if kind == "results":          # one call per kind of result: answer that kind only
             kinds = props["results"]["items"]["properties"]["result_kind"]["enum"]
             answer["results"] = [r for r in answer["results"] if r["result_kind"] in kinds]
@@ -156,9 +162,9 @@ def extract(tmp_path, fake=None, store=None, **kw):
 @pytest.mark.parametrize("topic", sorted(CB.topics))
 def test_every_field_is_on_exactly_one_form(topic):
     homes = Counter(t for tables in STEPS.values() for t in tables)
-    assert set(homes) | {"evidence"} == set(TABLES) and set(homes.values()) == {1}
+    assert set(homes) | set(NOT_EXTRACTED) == set(TABLES) and set(homes.values()) == {1}
     listed = Counter((t, f.name) for step in STEPS for t, f, _ in form_fields(step, CB, topic))
-    want = {(t, f.name) for t in TABLES if t != "evidence" for f in CB.tables[t]}
+    want = {(t, f.name) for t in TABLES if t not in NOT_EXTRACTED for f in CB.tables[t]}
     want = want - {("topic_fields", "value")} | {("topic_fields", n) for n in CB.topic_fields[topic]}
     assert set(listed) == want and set(listed.values()) == {1}
 
@@ -171,7 +177,7 @@ def test_forms_give_each_field_its_rules():
                 assert f"- {f.name} (" in text and f"evidence: {f.evidence}" in text
     study = form("study", CB, TOPIC, CB.topics[TOPIC])
     assert "pain after surgery" in study and "### gate" in study
-    assert "only when study_kind = prospective_trial or other" in study
+    assert "only when Study Type = INTERVENTIONAL" in study
     assert "Code fills: ID." in study and "Switzerland" in study      # the country names
 
 
@@ -464,9 +470,10 @@ def test_a_table_no_result_cites_is_asked_for(tmp_path):
 # -- results by table -------------------------------------------------------------------------
 
 def result(row, column, value, kind="outcome", columns=None):
-    return {"result_kind": kind, "arm_id": "VET-1-A2", "endpoint": row, "value": value,
-            "statistic_type": "count", "location": "Table 1", "as_written": f"{row} {value}",
-            "table_row": row, "table_columns": columns or [column]}
+    return {"result_kind": kind, "arm_id": "VET-1-A2", "endpoint": f"{row} {column}".strip(),
+            "value": value, "statistic_type": "count", "location": "Table 1",
+            "as_written": f"{row} {value}", "table_row": row,
+            "table_columns": columns or [column]}
 
 
 class ByTable(Fake):
@@ -488,8 +495,21 @@ class ByTable(Fake):
         if "results" in props and "This call: results in the running text" in prompt:
             self.seen.append("prose")
             self.prose += 1
-            return copy.deepcopy(ANSWERS["results"])
+            return self.sentences(listed(prompt))
         return super().__call__(step, prompt, schema)
+
+
+    def sentences(self, asked: dict) -> dict:
+        """The stock result for the sentence that reports it; every other sentence has none."""
+        hit = next((n for n, text in asked.items() if "3/29" in text), None)
+        rows = [dict(r, sentences=[hit]) for r in ANSWERS["results"]["results"]] if hit else []
+        return {"results": rows, "no_result": [n for n in asked if n != hit], "other_finding": []}
+
+
+def listed(prompt) -> dict:
+    """The sentences a prose call asks about: {id: text}, from its JSON list."""
+    part = prompt.rsplit("Sentences:", 1)[1]
+    return {x["id"]: x["text"] for x in json.loads(part[:part.rfind("]") + 1])}
 
 
 PLAN = [{"number": "1", "reports_results": True, "rows": ["Pain", "Rescue"],
@@ -527,6 +547,111 @@ def test_each_table_is_read_once_then_the_running_text(tmp_path):
     assert fake.seen == ["study", "arms", "plan", "table", "prose", "people"]
     assert rep.partly == 0
     assert len({r["result_id"] for r in store.rows("results")}) == 5
+
+
+def test_every_sentence_with_a_number_is_asked_about(tmp_path):
+    asked = {}
+
+    class Listens(ByTable):
+        def sentences(self, got):
+            asked.update(got)
+            return super().sentences(got)
+
+    by_table(tmp_path, Listens(PLAN, whole))
+    texts = list(asked.values())
+    assert any("3/29 dogs given analgesic X" in t for t in texts)       # a result
+    assert any("n = 30" in t for t in texts)                            # a method: asked too
+    assert list(asked) == [f"S{n}" for n in range(1, len(asked) + 1)]   # every sentence, once
+
+
+def test_a_dose_line_no_dose_uses_is_logged(tmp_path):
+    def change(kind, answer):
+        if kind == "arms":
+            for arm in answer["arms"]:
+                for dose in arm.get("arm_doses", []):
+                    dose["sentences"] = []
+
+    _, store, _ = extract(tmp_path, Fake(change))
+    assert any("neither used nor listed as not a dose" in r["problem"] for r in read_log(store))
+
+
+def test_a_result_s_passage_is_the_sentences_it_cites(tmp_path):
+    class Two(ByTable):
+        def sentences(self, got):
+            if not any("3/29" in t for t in got.values()):   # the second round: still no kind fits
+                return {"results": [], "no_fit": [{"id": n, "reason": "a method"} for n in got]}
+            hit = next(n for n, t in got.items() if "3/29" in t)
+            other = next(n for n, t in got.items() if "n = 30" in t)
+            rows = [dict(ANSWERS["results"]["results"][0], sentences=[hit, other, "S999"])]
+            rows[0].pop("as_written")
+            rest = [n for n in got if n not in (hit, other)]
+            return {"results": rows, "no_result": rest[1:], "other_finding": rest[:1]}
+
+    _, store, fake = by_table(tmp_path, Two(PLAN, whole))
+    assert fake.prose == 2                                              # the set-aside asked once more
+    row = next(r for r in store.rows("results") if r["endpoint"] == "rescue analgesia")
+    assert row["as_written"].startswith("Dogs were randomly assigned") and " … " in row["as_written"]
+    assert "3/29 dogs given analgesic X" in row["as_written"]          # cited ids, in text order
+    assert any("other finding" in r["problem"] and "a method" in r["problem"] for r in read_log(store))
+
+
+def test_sentences_left_unanswered_are_asked_once_more(tmp_path):
+    class Half(ByTable):
+        def sentences(self, got):
+            full = super().sentences(got)
+            if self.prose == 1:                      # the first call skips its last sentences
+                full["no_result"] = full["no_result"][:2]
+            return full
+
+    rep, store, fake = by_table(tmp_path, Half(PLAN, whole))
+    assert fake.prose == 2 and rep.partly == 0
+    assert len(store.rows("results")) == 5           # the result is stored once, not twice
+
+
+def test_sentences_never_answered_mark_the_paper_partly_read(tmp_path):
+    class Silent(ByTable):
+        def sentences(self, got):
+            return {"results": [], "no_result": [], "other_finding": []}
+
+    rep, store, fake = by_table(tmp_path, Silent(PLAN, whole))
+    assert fake.prose == 2 and rep.partly == 1
+    assert any("sentences not answered" in r["problem"] for r in read_log(store))
+
+
+def test_a_ratio_that_compares_nothing_is_sent_back_once(tmp_path):
+    def cells(prompt):
+        row = result("Pain", "Day 1", "7") | {"statistic_type": "odds_ratio"}
+        return {"results": [row], "blank_cells": ["Pain | Day 2", "Rescue | Day 1", "Rescue | Day 2"]}
+
+    def repair(prompt, schema):
+        assert "needs what it compares" in prompt
+        return {ref: "Age: old vs young" for ref in schema["properties"]}
+
+    fake = ByTable(PLAN, cells)
+    fake.repair = repair
+    _, store, _ = by_table(tmp_path, fake)
+    assert fake.seen.count("repair") == 1
+    assert [r["comparison"] for r in store.rows("results") if r["statistic_type"] == "odds_ratio"] \
+        == ["Age: old vs young"]
+
+
+def test_rows_nothing_tells_apart_are_sent_back_once(tmp_path):
+    def cells(prompt):                       # "Pain" twice, 7 and 8, under one name
+        rows = [result("Pain", "Day 1", "7") | {"endpoint": "Pain"},
+                result("Pain", "Day 2", "8") | {"endpoint": "Pain"}]
+        return {"results": rows, "blank_cells": ["Rescue | Day 1", "Rescue | Day 2"]}
+
+    def repair(prompt, schema):
+        assert "look_alike" in prompt
+        refs = list(schema["properties"])
+        return {refs[0]: "Pain: day 1"}       # the second answer is empty: its name stands
+
+    fake = ByTable(PLAN, cells)
+    fake.repair = repair
+    _, store, _ = by_table(tmp_path, fake)
+    assert fake.seen.count("repair") == 1
+    assert sorted(r["endpoint"] for r in store.rows("results") if r["location"] == "Table 1") \
+        == ["Pain", "Pain: day 1"]
 
 
 def test_a_table_with_no_results_is_not_read(tmp_path):
@@ -662,7 +787,7 @@ def test_the_paper_is_sent_once_and_deleted_after(tmp_path):
     cached_run(tmp_path, backend)
     assert len(backend.held) == 1 and TEXT_TABLE in backend.held[0]
     assert backend.closed == ["cache-1"]
-    assert all(c["cache"] == "cache-1" and "Sixty client-owned" not in c["prompt"]
+    assert all(c["cache"] == "cache-1" and TEXT_TABLE not in c["prompt"]   # never the whole paper
                for c in backend.calls)
 
 
@@ -766,3 +891,18 @@ def test_cached_input_is_charged_at_the_cached_price(tmp_path):
     price = llm.price(llm.cfg["models"]["structure"])
     want = 0.2 * price["input"] + 0.8 * price["cached"]
     assert llm.ledger.spent - before == pytest.approx(want, abs=1e-6)
+
+
+def test_citation_details_come_from_the_search_record(tmp_path):
+    """Title, year, journal and first author: the literature service's record of the paper,
+    as for its DOI, not the model's copy; the model fills them only without a record."""
+    store = Store(tmp_path / "v.db", CB)
+    store.db.execute("CREATE TABLE records (key TEXT, pmid TEXT, doi TEXT, pmcid TEXT, title TEXT, "
+                     "year TEXT, journal TEXT, first_author TEXT)")
+    store.db.execute("INSERT INTO records VALUES ('k', '', '10.9999/extract.1', '', "
+                     "'Title from the search', '2019', 'J Fict Vet Med', 'Search A')")
+    rep, store, _ = extract(tmp_path, store=store, record={"doi": "10.9999/extract.1"})
+    assert not rep.stopped, rep.stopped
+    src = next(r for r in store.rows("sources") if r["source_id"] == DOC)
+    assert (src["title"], src["year"], src["journal_or_agency"], src["first_author"]) == (
+        "Title from the search", "2019", "J Fict Vet Med", "Search A")

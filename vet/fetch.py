@@ -366,6 +366,9 @@ HEADING = {"title", "section-title", "article-title"}
 # inline items the XML gives with no space between them (names, keywords)
 SPACED = {"surname", "given-names", "given-name", "kwd", "keyword", "contrib", "author", "aff"}
 SKIP = {"ref-list", "bibliography", "meta", "coredata", "objects"}
+# a journal's peer review printed with the article (PLOS): reviewers' words, not the paper's
+REVIEW = {"aggregated-review-documents", "author-comment", "editor-report", "decision-letter",
+          "reply", "referee-report", "reviewer-report", "review-report"}
 
 
 def _local(el) -> str:
@@ -378,7 +381,7 @@ def _walk(el, out: list, in_cell: bool = False):
     Inside a cell, a line break or a second paragraph becomes ' / ': "3<break/>8" is two values,
     never "38", and the row stays on one line. Elsewhere a line break starts a new line."""
     name = _local(el)
-    if name not in SKIP:
+    if name not in SKIP and not (name == "sub-article" and el.get("article-type") in REVIEW):
         if name in CELL and not in_cell:
             inner = [el.text or ""]
             for kid in el:

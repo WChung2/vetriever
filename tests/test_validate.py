@@ -55,8 +55,8 @@ def _evidence_for_empty_field(t):
 
 
 def _retrospective_randomised(t):
-    t["studies"][0]["study_kind"] = "retrospective_cohort"
-    ev(t, "study_kind")["value"] = "retrospective_cohort"
+    t["studies"][0]["Study Type"] = "OBSERVATIONAL"     # trial-only fields no longer apply
+    ev(t, "Study Type")["value"] = "OBSERVATIONAL"
 
 
 def _orphan_study_source(t):
@@ -95,7 +95,7 @@ CASES = [
         **{"Eligibility Criteria": "Dogs undergoing ovariohysterectomy"})),
     ("sentinel", lambda t: t["studies"][0].update(disease_name="N/A")),
     ("sentinel", lambda t: t["studies"][0].update(Sponsor="not reported")),
-    ("too_long", lambda t: t["results"][0].update(as_written="x" * 501)),
+    ("too_long", lambda t: t["results"][0].update(as_written="x" * 2001)),
     ("orphan", lambda t: t["breeds"][0].update(arm_id=f"{SID}-A9")),
     ("orphan", lambda t: t["people"][0].update(site_no="2")),
     ("key_format", lambda t: t["studies"][0].update(ID="VET-PMID99999901-1")),
@@ -149,8 +149,8 @@ def test_a_value_may_have_several_quotes():
 
 def test_an_unstated_design_does_not_rule_fields_out():
     t = fixture.clean(CB)
-    t["studies"][0]["study_kind"] = ""                 # randomised etc. now can't be ruled out
-    t["evidence"].remove(ev(t, "study_kind"))
+    t["studies"][0]["Study Type"] = ""                 # randomised etc. now can't be ruled out
+    t["evidence"].remove(ev(t, "Study Type"))
     assert checks(t) == set()
 
 
@@ -243,27 +243,17 @@ def test_a_missing_text_file_is_reported_not_skipped(tmp_path):
     assert "no_text" in {i.check for i in validate(t, CB, root=tmp_path)}
 
 
-def test_a_value_must_be_in_its_own_quote():
+def test_a_number_is_not_looked_for_in_its_quote():
     t = fixture.clean(CB)
-    ev(t, "n_enrolled")["quote"] = "dogs were enrolled"
-    assert checks(t) == {"value_not_in_quote"}
-
-
-@pytest.mark.parametrize("field, value, quote", [
-    ("n_enrolled", "43", "Forty-three dogs were enrolled"),
-    ("n_enrolled", "120", "one hundred and twenty dogs"),
-    ("n_enrolled", "1200", "1,200 dogs"),
-    ("Started date", "2018-04", "from April 2018 to October 2020")])
-def test_numbers_in_words_and_dates_as_written_count(field, value, quote):
-    t = fixture.clean(CB)
-    t["studies"][0][field] = value
-    ev(t, field).update(value=value, quote=quote)
-    assert "value_not_in_quote" not in checks(t)
+    ev(t, "n_enrolled")["quote"] = "Forty-three dogs were enrolled"     # the value is 43 or not: not judged by rule
+    t["results"][0]["value"] = "4"
+    assert checks(t) == set()
 
 
 def test_adverse_event_fields_only_on_adverse_event_rows():
     t = fixture.clean(CB)
-    t["results"][0].update(result_kind="outcome", ae_fatal="died")
+    t["results"][0].update(result_kind="outcome", ae_fatal="died",
+                           as_written=t["results"][0]["as_written"] + "; 1 died")
     assert checks(t) == {"not_applicable_filled"}
     t["results"][0].update(result_kind="adverse_event", endpoint="vomiting")
     assert checks(t) == set()
@@ -279,21 +269,12 @@ def test_one_dose_may_have_several_routes():
 
 
 @pytest.mark.parametrize("change, check", [
-    ({"value": "4"}, "value_not_in_quote"),             # the number isn't in its sentence
-    ({"p_value": "<0.01"}, "value_not_in_quote"),
     ({"events": "31"}, "events_more_than_n"),
     ({"result_kind": ""}, "missing_value")])
-def test_results_numbers_are_checked_against_their_sentence(change, check):
+def test_a_result_row_holds_together(change, check):
     t = fixture.clean(CB)
     t["results"][0].update(change)
     assert check in checks(t)
-
-
-def test_a_denominator_from_a_table_header_counts_when_it_is_the_arm_size():
-    t = fixture.clean(CB)
-    t["results"][0]["as_written"] = "needed rescue within 24 h | 3 |"     # n=29 only in the header
-    t["results"][0]["n"] = t["arms"][1]["n_analysed"]
-    assert "value_not_in_quote" not in checks(t)
 
 
 def test_copied_passages_may_be_joined_and_each_is_checked(tmp_path):

@@ -164,6 +164,18 @@ def test_an_elsevier_line_break_counts_too():
     assert "n | 12 / 15 |" in text
 
 
+def test_the_journals_peer_review_is_not_part_of_the_document():
+    xml = ("<article><body><p>We conducted a prospective, observational study.</p></body>"
+           '<sub-article article-type="editor-report"><body><p>Reviewer #1: 44 dogs were '
+           'excluded.</p></body></sub-article><sub-article article-type="author-comment"><body>'
+           "<p>We thank the reviewer.</p></body></sub-article>"
+           '<sub-article article-type="translation"><body><p>Resumen</p></body></sub-article>'
+           "</article>")
+    text = f._read("xml", xml.encode())[0]
+    assert "observational study" in text and "Resumen" in text
+    assert "Reviewer" not in text and "thank" not in text
+
+
 def test_reread_updates_an_xml_text_and_keeps_the_old_one(tmp_path):
     p = run(pmc_services(), tmp_path)
     xml = (tmp_path / p.file_name).read_text().replace("<td>2 mg/kg</td>", "<td>2<break/>4 mg/kg</td>")

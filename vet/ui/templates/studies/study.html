@@ -103,7 +103,7 @@
       {% endfor %}
       {% endcall %}
     {% endcall %}
-    {% for kind, title in [("outcome", "Outcomes"), ("adverse_event", "Adverse events"), ("baseline", "Baseline (at entry)")] %}
+    {% for kind, title in [("outcome", "Outcomes"), ("adverse_event", "Adverse events"), ("treatment_given", "Treatment given"), ("baseline", "Baseline (at entry)")] %}
       {% call collapsible(title ~ " (" ~ (s.results[kind] | length) ~ ")") %}
         {% if s.results[kind] %}{{ results_table(s.results[kind]) }}{% else %}{{ caption("None stored.") }}{% endif %}
       {% endcall %}

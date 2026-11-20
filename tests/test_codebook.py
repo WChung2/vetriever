@@ -22,8 +22,9 @@ def test_every_study_table_is_keyed_by_id():
 
 def test_coded_fields_need_quotes_except_bookkeeping():
     # schema v2 section 8: every filled C field needs a quote, except tables that carry their
-    # own text (results, definitions) or are filled by code (sources, study_sources)
-    exempt = {"sources", "study_sources", "results", "definitions", "evidence", "conflicts"}
+    # own text (results, definitions, study_links) or are filled by code (sources, study_sources)
+    exempt = {"sources", "study_sources", "results", "definitions", "study_links", "evidence",
+              "conflicts"}
     for f in CB.fields + [f for fields in CB.topic_fields.values() for f in fields.values()]:
         if f.kind == "C" and f.table not in exempt and f.name != "not_applicable":
             assert f.evidence == "quote", f"{f.table}.{f.name}"

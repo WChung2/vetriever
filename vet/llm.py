@@ -26,7 +26,8 @@ class BudgetExceeded(RuntimeError):
 
 
 CALL_TIMEOUT_MS = 600_000   # a silent connection must not hang a run for ever
-CACHE_TTL = "1800s"      # a held document outlives its calls by far; it is deleted after them
+CACHE_TTL = "3600s"      # a held document outlives its calls (a long paper, read sentence by
+                         # sentence and cell by cell, takes 15 to 30 minutes); it is deleted after them
 
 
 class Ledger:
@@ -199,9 +200,9 @@ class LLM:
         self.ledger.settle(usd, self._row(step, doc, model, {}, usd))
 
     def call(self, step: str, prompt: str, schema: dict, system: str = "", doc: str = "_",
-             cache: str = ""):
+             cache: str = "", thinking: str = ""):
         model = self.cfg["models"][step]
-        thinking = self.cfg["thinking"][step]
+        thinking = thinking or self.cfg["thinking"][step]
         spend = self.cfg["spending"]
         max_out = spend.get("max_output_tokens_by_step", {}).get(step, spend["max_output_tokens"])
         p = self.price(model)

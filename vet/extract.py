@@ -41,6 +41,7 @@ from .codebook import KINDS, TABLES, Codebook, Field
 from .screen import healthy_setting
 from .settings import DB, ROOT
 from .store import Store, _identifiers, document_key
+from .tidy import citation, search_record, tidy
 from .validate import ROW_KEY, SOURCE_ID, _flat, validate
 
 STEPS = {
@@ -49,16 +50,24 @@ STEPS = {
     "results": ("results",),
     "people": ("people", "breeds", "definitions", "topic_fields", "conflicts"),
 }
+# tables no one document fills: evidence is written with each value, study_links is decided
+# across studies (vet link)
+NOT_EXTRACTED = ("evidence", "study_links")
 TITLES = {"study": "the study", "arms": "arms and doses", "results": "results",
           "people": "people, breeds, definitions and the topic's own fields"}
 HOW = {
     "sources": "one row, the document itself",
     "studies": "one row, the study this document reports",
     "sites": "one row per site where animals were enrolled",
-    "arms": "one row per arm (treatment group), each with its doses in arm_doses",
-    "arm_doses": "inside each arm, one row per drug and dose",
-    "results": "one row per number or finding, each with its own sentence or table row in "
-               "as_written; every number in the row must be in its as_written",
+    "arms": "one row per group the study set up or selected at the start (treatment groups; "
+            "cases and comparison animals), each with its doses in arm_doses. A group formed "
+            "afterwards by what happened to the animals (survivors, responders) is not an arm: "
+            "it goes in results.subgroup",
+    "arm_doses": "inside each arm, one row per drug and dose; a dose that changes over time "
+                 "(a taper), in the text or in a table, is one row per step",
+    "results": "one row per result or finding (result_kind says what is one), each with its own "
+               "sentence or table row in as_written; every number in the row must be in its "
+               "as_written",
     "people": "one row per person named as author, investigator or study director",
     "breeds": "one row per breed (per arm, when the document gives breeds per arm)",
     "definitions": "one row per term the document defines",
@@ -111,6 +120,8 @@ RESULT_PARTS = {
                "measured at entry or at diagnosis are baseline, not outcomes: leave them out",
     "adverse_event": "every adverse event, complication or death reported as a harm, per arm",
 }
+# every kind a table or the running text may give
+RESULT_KINDS = ("baseline", "treatment_given", "outcome", "adverse_event")
 PART_FORM = """## This call: result_kind = {kind} only
 Give {what}. Don't choose among them: the database needs every one. Leave out the fields you
 leave empty."""
@@ -147,6 +158,11 @@ Columns:
   with neither reads as the whole study, so only a whole-study column leaves both empty.
 - A column that only qualifies another value (its confidence limit, spread or P value) goes in
   that value's fields, in the same result row.
+- A column, or a part of a cell, that is one category of the row (yes / no, positive /
+  negative, a grade): name that category in endpoint, after the row's label.
+- A ratio, a difference or a coefficient tied to a factor: endpoint is the outcome it is about
+  (the table's title often names it; use those words, not the whole title); comparison is the
+  row's factor, then its levels or unit (Factor: level A vs level B).
 - as_written: the printed row, then " … ", then the printed column heading, so the value and
   its timepoint are both in it. A heading printed on two lines is two passages: "CON … Day 1".
 - table_row: the row as listed above. table_columns: every column listed above that the
@@ -164,9 +180,128 @@ Cells:
 
 Leave out the fields you leave empty."""
 PROSE_FORM = """## This call: results in the running text
-The tables have been read already. Give every result the running text reports that no table
-holds: the animals' condition at entry (baseline), outcomes, and adverse events. Leave out numbers
-that are printed in a table. Leave out the fields you leave empty."""
+The tables have been read already. The sentences below are JSON: id, the section they are
+in, and the text. Answer every sentence, by its id, in one of three ways:
+- results: each result it reports for this study's animals (condition at entry, treatment
+  given, outcomes, adverse events), one row per result. sentences = the ids the row comes
+  from: its own, and any other listed sentence it needs (a denominator, a time, whether an
+  event was fatal).
+- no_result: it reports nothing about this study's animals (background, methods, statistics,
+  other studies), or only numbers a table already gives.
+- other_finding: it reports a finding about this study's animals that no kind of result fits.
+
+Sentences:
+{sentences}
+
+Leave out the fields you leave empty."""
+PROSE_OTHER = """## This call: results in the running text, the sentences set aside
+These sentences were set aside as reporting no kind of result. Give each as result rows,
+with sentences = the ids each row comes from (it may also cite the other sentences here). Only
+when it truly fits no kind, list its id under no_fit with the reason in a few words.
+
+Sentences:
+{sentences}
+
+Leave out the fields you leave empty."""
+PROSE_MORE = """## This call: results in the running text, the sentences still unanswered
+Answer each of these sentences by its id, in results (sentences = the ids each row comes from),
+no_result or other_finding, as before.
+
+Sentences:
+{sentences}
+
+Leave out the fields you leave empty."""
+SENTENCES_PER_CALL = 40
+# a number that is only a pointer (a citation, a figure or table number) is not a result
+POINTER = re.compile(r"\[\d+(?:\s*[,–-]\s*\d+)*\]|\b(?:figs?|figures?|tables?)\.?\s*S?\d+[a-z]?"
+                     r"|\bS\d+\s+(?:fig|table)", re.IGNORECASE)
+COUNT_WORD = re.compile(r"\b(?:no|none|neither|both|half|one|two|three|four|five|six|seven|eight|"
+                        r"nine|ten|eleven|twelve)\b", re.IGNORECASE)
+SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=[A-Z(\[])")
+# a ratio, a difference or a coefficient compares something: sent back once when it says no what
+COMPARES = {"odds_ratio", "risk_ratio", "hazard_ratio", "risk_difference", "mean_difference",
+            "median_difference", "regression_coefficient"}
+
+
+# what names a result: two rows alike in all of these, with different numbers, can't be told apart
+ALIKE = ("arm_id", "result_kind", "endpoint", "subgroup", "population", "timepoint_value",
+         "timepoint_unit", "statistic_type", "comparison")
+
+
+def _table_line(line: str) -> bool:
+    """A table row as the text readers write it: cells joined by ' | ', ending in '|' (a row
+    with one cell, a sub-heading, too)."""
+    return line.rstrip().endswith("|")
+
+
+def sentences(text: str) -> list[tuple[str, str]]:
+    """Every sentence of the running text, in order, once each, with the section it is in:
+    what the prose step must answer. Table rows and headings are left out."""
+    out, seen, section = [], set(), ""
+    for line in text.split("\n"):
+        if line.startswith("## "):
+            section = line[3:].strip()[:80]
+            continue
+        if _table_line(line):
+            continue
+        for s in SENTENCE_END.split(line):
+            s = " ".join(s.split())
+            if len(s) >= 15 and s not in seen:
+                seen.add(s)
+                out.append((section, s))
+    return out
+
+
+# a dose in a sentence or table row: a number (or range) with a unit per weight, area or day
+DOSE_TEXT = re.compile(r"\d(?:[\d.,]*)(?:\s*(?:-|‐|–|—|to)\s*\d[\d.,]*)?\s*(?:mg|µg|μg|mcg|ug|g|IU|U|"
+                       r"mL|ml|mmol|mEq)\s*(?:/|per)\s*(?:kg|m2|m²|m 2|10\s?kg|dog|cat|animal|day|d\b)",
+                       re.IGNORECASE)
+DOSE_LIST = """
+## Dose checklist
+Code found these sentences and table rows with a dose in them, as JSON. Every dose this
+study's animals received or were planned to receive is a row in arm_doses, with sentences =
+the ids it comes from. List under not_a_dose each id that states no dose of this study (another
+study's dose, a reference range, a concentration).
+
+{doses}"""
+
+
+DOSE_UNIT = re.compile(r"(?:mg|µg|μg|mcg|ug|g|IU|U|mL|ml|mmol|mEq)\s*(?:/|per)\s*(?:kg|m2|m²|m 2)",
+                       re.IGNORECASE)
+
+
+def dose_lines(text: str) -> list[tuple[str, str]]:
+    """Sentences and table rows that hold a dose, with their section, in order, once each. A
+    table whose heading row carries a dose unit gives each of its rows, after that heading."""
+    out, seen, section, heading = [], set(), "", ""
+    for line in text.split("\n"):
+        if line.startswith("## "):
+            section = line[3:].strip()[:80]
+            continue
+        table = _table_line(line)
+        if not table:
+            heading = ""
+        elif not heading:                           # the first row of a table: its heading
+            heading = " ".join(line.split())
+            if DOSE_TEXT.search(heading) and heading not in seen:
+                seen.add(heading)
+                out.append((section, heading))
+            continue
+        row = " ".join(line.split())
+        if table and DOSE_UNIT.search(heading) and re.search(r"\d", row):
+            s = f"{heading} … {row}"
+            if s not in seen:
+                seen.add(s)
+                out.append((section, s))
+            continue
+        for s in ([row] if table else SENTENCE_END.split(line)):
+            s = " ".join(s.split())
+            if s not in seen and DOSE_TEXT.search(s):
+                seen.add(s)
+                out.append((section, s))
+    return out
+
+
 REPAIR = """## Form: corrections
 Code checked your answer against the document and the codebook, and the values below failed.
 Give each one again, corrected, with the evidence its field needs, or leave it empty if the
@@ -399,6 +534,7 @@ class _Doc:
         self.report = ExtractReport(source_id)
         self.by_table = llm.cfg["pipeline"].get("results_by_table", False)
         self.cache = ""            # the document held at Google, so it is sent only once
+        self.no_fit = {}           # running-text sentence id -> why no kind of result fits
 
     def run(self):
         if self.by_table:
@@ -416,16 +552,25 @@ class _Doc:
             if step == "results":
                 new = self._results_by_table() if self.by_table else self._results()
             else:
-                answer = self._ask(form(step, self.cb, self.topic_name, self.topic),
-                                   schema(step, self.cb, self.topic_name, self._key_lists()))
+                body = form(step, self.cb, self.topic_name, self.topic)
+                answer_schema = schema(step, self.cb, self.topic_name, self._key_lists())
+                doses = dose_lines(self.text) if step == "arms" else []
+                if doses:
+                    body, answer_schema = self._dose_checklist(body, answer_schema, doses)
+                answer = self._ask(body, answer_schema)
                 if step == "study" and self._gate(answer.get("gate")):
                     return
+                if doses:
+                    self._cite_doses(answer, doses)
                 new = self._rows(step, answer)
                 self.rows += new
             found = self._check()
             mine = {k: v for k, v in found.items() if k[0] in new and k[1]}
+            soft = (self._uncompared(new) | self._alike(new) if step == "results"
+                     else self._verdict(new) if step == "study" else {})
+            mine = soft | mine
             if mine:
-                self._repair(mine)
+                self._repair(mine, keep=set(soft) - set(found))
             self._settle()
 
     def _results(self) -> list[Row]:
@@ -458,8 +603,159 @@ class _Doc:
             rows, columns = table.get("rows") or [], table.get("columns") or []
             if table.get("reports_results") is not False and rows and columns:
                 new += self._read_table(str(table.get("number") or "?"), rows, columns, body)
-        answer = self._ask(body + "\n\n" + PROSE_FORM, self._results_schema(list(RESULT_PARTS)))
-        return new + self._add(self._list("results", answer.get("results")))
+        new += self._read_prose(body)
+        return self._doses_not_results(new)
+
+    def _doses_not_results(self, new: list[Row]) -> list[Row]:
+        """A treatment_given row that only repeats a dose stored in arm_doses (same drug, same
+        number, a dose unit) is dropped: a dose has one home. Logged."""
+        doses = [(r.cells["drug"].value.lower(), r.cells["dose_value"].value)
+                 for r in self.rows if r.table == "arm_doses" and r.cells["dose_value"].value]
+        keep = []
+        for r in new:
+            c = r.cells if r.table == "results" else {}
+            if (c and c["result_kind"].value == "treatment_given" and c["value"].value
+                    and DOSE_UNIT.search(c["value_unit"].value)
+                    and any(v == c["value"].value and drug.split()[0] in c["endpoint"].value.lower()
+                            for drug, v in doses if drug)):
+                self.rows.remove(r)
+                self._note("results", _short(r.ref), "value", c["value"].value,
+                           "a dose already in arm_doses: not kept as a result")
+                continue
+            keep.append(r)
+        return keep
+
+    def _read_prose(self, body: str) -> list[Row]:
+        """The running text, sentence by sentence: code lists every sentence with an id, each
+        call answers some (results, no_result or other_finding), and the ones left unanswered
+        are asked once more. A result's passage and place are the sentences it cites."""
+        items = {f"S{n}": (section, text) for n, (section, text) in enumerate(sentences(self.text), 1)}
+        new, done, other = [], set(), set()
+        listed = lambda part: json.dumps([{"id": i, "section": items[i][0], "text": items[i][1]}
+                                          for i in part], ensure_ascii=False, indent=0)
+        for form in (PROSE_FORM, PROSE_MORE):
+            todo = [i for i in items if i not in done]
+            for start in range(0, len(todo), SENTENCES_PER_CALL):
+                part = todo[start:start + SENTENCES_PER_CALL]
+                new += self._prose_call(body, done, other, items, part,
+                                        form.format(sentences=listed(part)))
+        aside = sorted(other, key=lambda i: int(i[1:]))       # the second round: set aside
+        for start in range(0, len(aside), SENTENCES_PER_CALL):
+            part = aside[start:start + SENTENCES_PER_CALL]
+            new += self._prose_call(body, done, other, items, part,
+                                    PROSE_OTHER.format(sentences=listed(part)), second=True)
+        for i in sorted(other, key=lambda i: int(i[1:])):
+            self._note("results", "running text", "", items[i][1][:300],
+                       f"other finding ({i}): {self.no_fit.get(i) or 'no kind of result fits'}")
+        left = [i for i in items if i not in done]
+        if left:
+            self.report.partly += 1
+            self._note("results", "running text", "", "",
+                       f"partly read: {len(left)} of {len(items)} sentences not answered")
+        return new
+
+    def _prose_call(self, body: str, done: set, other: set, items: dict, part: list, ask: str,
+                    second: bool = False) -> list[Row]:
+        try:
+            answer = self._ask(body + "\n\n" + ask, self._prose_schema(part, second))
+        except ExtractionFailed as e:
+            self._note("results", "running text", "", "", f"part of the text not read: {e}")
+            return []
+        got = []
+        for r in answer.get("results") or []:
+            ids = [i for i in (r.get("sentences") or []) if i in items] if isinstance(r, dict) else []
+            if not ids:
+                continue
+            ids = sorted(set(ids), key=lambda i: int(i[1:]))
+            r["as_written"] = " … ".join(items[i][1] for i in ids)
+            r["location"] = items[ids[0]][0] or "running text"
+            got.append(r)
+            done.update(ids)
+            other.difference_update(ids)
+        if second:
+            for x in answer.get("no_fit") or []:
+                if isinstance(x, dict) and x.get("id") in items:
+                    self.no_fit[x["id"]] = str(x.get("reason") or "")[:200]
+        else:
+            done.update(i for i in answer.get("no_result") or [] if i in items)
+            found = {i for i in answer.get("other_finding") or [] if i in items}
+            done.update(found)
+            other.update(found - {i for r in got for i in r.get("sentences") or []})
+        return self._add(self._list("results", got))
+
+    def _prose_schema(self, ids: list, second: bool = False) -> dict:
+        s = self._results_schema(list(RESULT_KINDS))
+        item = s["properties"]["results"]["items"]
+        for k in ("as_written", "location"):           # code writes them from the cited sentences
+            item["properties"].pop(k, None)
+        item["required"] = [k for k in item["required"] if k not in ("as_written", "location")]
+        listed = {"type": "array", "items": {"type": "string", "enum": list(ids)}}
+        item["properties"]["sentences"] = listed
+        item["required"] = [*item["required"], "sentences"]
+        if second:
+            s["properties"]["no_fit"] = {"type": "array", "items": _object({
+                "id": {"type": "string", "enum": list(ids)}, "reason": {"type": "string"}})}
+            s["required"] = [*s["required"], "no_fit"]
+            return s
+        s["properties"] |= {"no_result": listed, "other_finding": listed}
+        s["required"] = [*s["required"], "no_result", "other_finding"]
+        return s
+
+    def _dose_checklist(self, body: str, answer_schema: dict, doses: list) -> tuple[str, dict]:
+        ids = [f"D{n}" for n in range(1, len(doses) + 1)]
+        listed = json.dumps([{"id": i, "section": sec, "text": t} for i, (sec, t) in zip(ids, doses)],
+                            ensure_ascii=False, indent=0)
+        cite = {"type": "array", "items": {"type": "string", "enum": ids}}
+        dose = answer_schema["properties"]["arms"]["items"]["properties"]["arm_doses"]["items"]
+        dose["properties"]["sentences"] = cite
+        answer_schema["properties"]["not_a_dose"] = cite
+        return body + "\n" + DOSE_LIST.format(doses=listed), answer_schema
+
+    def _cite_doses(self, answer: dict, doses: list):
+        """A dose's passage is the checklist lines it cites; checklist lines no dose cites and
+        not listed as not_a_dose are logged."""
+        lines = {f"D{n}": d for n, d in enumerate(doses, 1)}
+        used = {i for i in answer.get("not_a_dose") or [] if i in lines}
+        for arm in answer.get("arms") or []:
+            for d in (arm.get("arm_doses") or []) if isinstance(arm, dict) else []:
+                ids = [i for i in d.get("sentences") or [] if i in lines] if isinstance(d, dict) else []
+                if ids:
+                    used.update(ids)
+                    d["dose_as_written"] = {"value": " … ".join(lines[i][1] for i in ids),
+                                            "location": lines[ids[0]][0] or "text"}
+        for i in sorted(set(lines) - used, key=lambda i: int(i[1:])):
+            self._note("arm_doses", "dose checklist", "", lines[i][1][:300],
+                       f"dose line {i} neither used nor listed as not a dose")
+
+    def _alike(self, rows: list[Row]) -> dict:
+        """Results nothing tells apart: the same endpoint, group, time and statistic with
+        different numbers. Asked once more what each number is for."""
+        groups = {}
+        for r in rows:
+            if r.table == "results" and r in self.rows:
+                groups.setdefault(tuple(r.cells[n].value for n in ALIKE), []).append(r)
+        why = ("look_alike: other rows of this paper have the same endpoint, group, time and "
+               "statistic with different numbers; name what this number is for (its category, "
+               "level or factor), as its passage shows")
+        return {(r, "endpoint"): [why] for g in groups.values() for r in g
+                if len({tuple(x.cells[n].value for n in ("value", "events", "n")) for x in g}) > 1}
+
+    def _verdict(self, rows: list[Row]) -> dict:
+        """A positive or negative verdict with no comparator stated: asked once more."""
+        why = ("no_comparison: positive or negative needs a comparison group or a goal the "
+               "document set in advance; with neither stated, the verdict is inconclusive")
+        return {(r, "trial_outcome"): [why] for r in rows if r.table == "studies"
+                and r.cells["trial_outcome"].value in ("positive", "negative")
+                and r.cells["control_type"].value in ("", "none")}
+
+    def _uncompared(self, rows: list[Row]) -> dict:
+        """Ratios and differences that don't say what they compare: asked once more."""
+        why = ("missing_value: a ratio, a difference or a coefficient needs what it compares: "
+               "the factor from its row, then its levels or unit; or the two groups")
+        return {(r, "comparison"): [why]
+                for r in rows if r.table == "results" and r in self.rows
+                and r.cells["statistic_type"].value in COMPARES
+                and not r.cells["comparison"].value and not r.cells["reference_arm_id"].value}
 
     def _read_table(self, n: str, rows: list, columns: list, body: str) -> list[Row]:
         new, seen, step = [], [], max(1, CELLS_PER_CALL // len(columns))
@@ -493,7 +789,7 @@ class _Doc:
         return self._add(self._list("results", got))
 
     def _table_schema(self) -> dict:
-        s = self._results_schema(list(RESULT_PARTS))
+        s = self._results_schema(list(RESULT_KINDS))
         item = s["properties"]["results"]["items"]
         item["properties"] |= {"table_row": {"type": "string"}, "table_columns": TEXTS}
         item["required"] = [*item["required"], "table_row", "table_columns"]
@@ -520,7 +816,8 @@ class _Doc:
         self.report.calls += 1
         try:
             answer = self.llm.call("structure", prompt, answer_schema, system=self.system,
-                                   doc=self.source_id, cache=self.cache)
+                                   doc=self.source_id, cache=self.cache,
+                                   thinking=self.llm.cfg["thinking"].get(f"structure_{self.step}", ""))
         except json.JSONDecodeError as e:
             raise ExtractionFailed(f"the model's answer is not JSON (cut off?): {e}") from e
         return answer if isinstance(answer, dict) else {}
@@ -634,6 +931,9 @@ class _Doc:
         if rec.get("doi"):                  # the index record's DOI, not the model's copy
             keys["doi"] = str(rec["doi"])
             del cells["doi"]
+        for k, v in (rec.get("citation") or {}).items():   # the search's record of the paper
+            keys[k] = v
+            cells.pop(k, None)
         return Row("sources", "sources", keys, cells)
 
     # -- checks ---------------------------------------------------------------------------
@@ -660,11 +960,15 @@ class _Doc:
                 if not cell.value or f.evidence == "none" or not (cell.quote or cell.location):
                     continue
                 quote = cell.quote if f.evidence == "quote" else ""
-                tables["evidence"].append({
-                    "ID": PROVISIONAL, "source_id": self.source_id, "table": row.table,
-                    "row_key": row_key, "field": f.name, "value": cell.value, "quote": quote,
-                    "quote_truncated": "no" if quote else "", "location": cell.location})
-                owners["evidence"].append((row, name))
+                # a list may give one passage per item, joined by " … ": one evidence row each
+                parts = ([q.strip() for q in quote.split(" … ") if q.strip()]
+                         if f.type == "pipe_list" and " … " in quote else [quote])
+                for part in parts:
+                    tables["evidence"].append({
+                        "ID": PROVISIONAL, "source_id": self.source_id, "table": row.table,
+                        "row_key": row_key, "field": f.name, "value": cell.value, "quote": part,
+                        "quote_truncated": "no" if part else "", "location": cell.location})
+                    owners["evidence"].append((row, name))
         return tables, owners
 
     def _check(self) -> dict:
@@ -698,9 +1002,9 @@ class _Doc:
                     "doi_not_in_document: copy the DOI from the document, never from memory")
         return found
 
-    def _repair(self, mine: dict):
+    def _repair(self, mine: dict, keep: frozenset | set = frozenset()):
         """One call for the step: each failing value with its problems; the answers replace
-        those values."""
+        those values. keep: values asked about again that stand when the answer is empty."""
         refs, items, props, keys = {}, {}, {}, self._key_lists()
         for (row, name), problems in mine.items():
             f, c = self._field(row, name), row.cells[name]
@@ -725,7 +1029,9 @@ class _Doc:
             for ref, raw in answer.items():
                 if ref in refs:
                     row, name = refs[ref]
-                    row.cells[name] = _cell(raw, self._field(row, name), self.cb)
+                    cell = _cell(raw, self._field(row, name), self.cb)
+                    if cell.value or (row, name) not in keep:
+                        row.cells[name] = cell
         after = self._check()
         for (row, name), problems in mine.items():
             if (row, name) in after:
@@ -859,6 +1165,9 @@ def extract_document(source_id: str, topic_name: str, topic: dict, llm, store: S
         raise ValueError(f"no topics/{topic_name}.toml")
     _screen(topic)
     record = _index_record(root, source_id) if record is None else record
+    ids = {k: str(record.get(k) or "") for k in ("doi", "pmid", "pmcid")}
+    record = {**record, "citation": citation(search_record(store.db, {"source_id": source_id,
+                                                                      **ids}))}
     stored = _stored_as(store, source_id, record)
     if stored:
         return ExtractReport(source_id, stopped=f"already in the database as {stored}")
@@ -911,6 +1220,7 @@ def run_extract(keys: list[str], topic_name: str, llm, db_path: Path = DB,
                 record = write_abstract({**abstracts[key], "source_id": key}, root)
             out.append(extract_document(key, topic_name, topic, llm, store, root, record))
             say(out[-1].line())
+        say(tidy(store).line())
     finally:
         store.close()
     return out

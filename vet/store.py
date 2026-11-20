@@ -32,7 +32,7 @@ from .validate import PRIMARY_KEY
 # table per topic.
 LEGACY_TOPIC_TABLES = {"ext_pain": "surgical_pain", "ext_imha": "imha", "ext_cie": "cie"}
 SOURCE_COLUMNS = {"source_id", "primary_source_id", "secondary_source_id"}
-STUDY_KEY_COLUMNS = {"ID", "arm_id", "dose_id", "result_id", "reference_arm_id"}
+STUDY_KEY_COLUMNS = {"ID", "arm_id", "dose_id", "result_id", "reference_arm_id", "linked_ID"}
 # columns whose values are keys or structure, renamed by an import; all others are counted
 NOT_COUNTED = SOURCE_COLUMNS | STUDY_KEY_COLUMNS | {"row_key", "table", "topic", "field"}
 
@@ -190,8 +190,8 @@ class Store:
         for name, rows in t.items():
             rep.rows_in[name] = len(rows)
         in_folder = {r["ID"] for r in t["studies"]}
-        orphans = sorted({r["ID"] for rows in t.values() for r in rows
-                          if r.get("ID") and r["ID"] not in in_folder})
+        orphans = sorted({r[c] for rows in t.values() for r in rows for c in ("ID", "linked_ID")
+                          if r.get(c) and r[c] not in in_folder})
         if orphans:
             raise ValueError(f"nothing imported: rows refer to studies that {where} has no "
                              f"studies row for, e.g. {orphans[:3]}")
@@ -244,8 +244,8 @@ class Store:
         for name, rows in t.items():
             keep = []
             for r in rows:
-                skipped = (r.get("ID") in skip_studies if r.get("ID")
-                           else r.get("source_id") in skip_docs)
+                skipped = (r.get("ID") in skip_studies or r.get("linked_ID") in skip_studies
+                           if r.get("ID") else r.get("source_id") in skip_docs)
                 if name == "sources":
                     skipped = r["source_id"] in skip_docs
                 (values_skipped if skipped else values_in).update(_values(name, [r]))
@@ -282,6 +282,111 @@ class Store:
         rep.values_skipped = sum(values_skipped.values())
         rep.missing += values_in - stored                      # lost while storing
         return rep
+
+
+    def _breeds_of_gone_groups(self, study_id: str, groups: set) -> tuple[int, int]:
+        """A breeds row whose group is no longer among the study's groups is kept for the whole
+        study, with its evidence; when that breed is already recorded for the whole study the row
+        adds nothing and goes, with its evidence. Returns (kept for the whole study, gone)."""
+        loose = doubled = 0
+        rows = self.db.execute("SELECT arm_id, Breed FROM breeds WHERE ID = ? AND arm_id != ''",
+                               (study_id,)).fetchall()
+        for arm, breed in rows:
+            if arm in groups:
+                continue
+            mine = (study_id, f"{arm}|{breed}")
+            if self.db.execute("SELECT 1 FROM breeds WHERE ID = ? AND arm_id = '' AND Breed = ?",
+                               (study_id, breed)).fetchone():
+                self.db.execute("DELETE FROM breeds WHERE ID = ? AND arm_id = ? AND Breed = ?",
+                                (study_id, arm, breed))
+                self.db.execute("DELETE FROM evidence WHERE ID = ? AND \"table\" = 'breeds' "
+                                "AND row_key = ?", mine)
+                doubled += 1
+            else:
+                self.db.execute("UPDATE breeds SET arm_id = '' WHERE ID = ? AND arm_id = ? AND "
+                                "Breed = ?", (study_id, arm, breed))
+                self.db.execute("UPDATE evidence SET row_key = ? WHERE ID = ? AND \"table\" = "
+                                "'breeds' AND row_key = ?", (f"|{breed}", *mine))
+                loose += 1
+        return loose, doubled
+
+    # -- a study read again ------------------------------------------------------------
+    def replace_reading(self, study_id: str, tables: dict) -> dict:
+        """Put a new reading of one stored study in place of the old one, in one transaction:
+        the values of its studies row, its groups, doses and results, and the evidence of
+        those. The study keeps its ID, documents, topics, people, breeds, definitions, topic
+        fields and links. A group keeps its id when its name is unchanged, or when the study
+        has one group before and after, so rows that point at it still do; a breeds row whose
+        group is gone is kept for the whole study. Sites are replaced only when no person is
+        tied to one. tables: {"studies": [one row], "arms", "arm_doses", "results", "sites",
+        "evidence"} with this study's ID. Returns counts."""
+        if not self.db.execute("SELECT 1 FROM studies WHERE ID = ?", (study_id,)).fetchone():
+            raise ValueError(f"no study {study_id} in the database")
+        (study,) = tables["studies"]
+
+        def flat(s) -> str:
+            return " ".join(str(s).lower().split())
+
+        old = [{"arm_id": a, "arm_label": b} for a, b in self.db.execute(
+            "SELECT arm_id, arm_label FROM arms WHERE ID = ? ORDER BY arm_id", (study_id,))]
+        new = tables.get("arms", [])
+        by_name = {flat(r["arm_label"]): r["arm_id"] for r in old}
+        if len(old) == 1 and len(new) == 1:
+            ids = {new[0]["arm_id"]: old[0]["arm_id"]}
+        else:
+            ids = {r["arm_id"]: by_name[flat(r["arm_label"])] for r in new
+                   if flat(r["arm_label"]) in by_name}
+        used = set(ids.values())
+        n = max([int(m.group(1)) for a in [r["arm_id"] for r in old + new]
+                 if (m := re.search(r"-A(\d+)$", a))] or [0])
+        for r in new:                                # a group with a new name: a number not used before
+            if r["arm_id"] not in ids:
+                n += 1
+                ids[r["arm_id"]] = f"{study_id}-A{n}"
+                used.add(ids[r["arm_id"]])
+
+        def key(value: str) -> str:
+            """A group's id, or a dose's (<group id>-D<n>), as it will be stored."""
+            for was, now in ids.items():
+                if value == was or value.startswith(was + "-D"):
+                    return now + value[len(was):]
+            return value
+
+        keep_sites = bool(self.db.execute(
+            "SELECT 1 FROM people WHERE ID = ? AND site_no != ''", (study_id,)).fetchone())
+        replaced = ["arms", "arm_doses", "results"] + ([] if keep_sites else ["sites"])
+        rows = {name: [dict(r) for r in tables.get(name, [])] for name in replaced}
+        for name in ("arms", "arm_doses", "results"):
+            for r in rows[name]:
+                for c in ("arm_id", "dose_id", "reference_arm_id"):
+                    if r.get(c):
+                        r[c] = key(r[c])
+        evidence = []
+        for e in tables.get("evidence", []):
+            if e["table"] != "studies" and e["table"] not in replaced:
+                continue
+            evidence.append({**e, "row_key": key(e["row_key"]) if e["table"] in ("arms", "arm_doses")
+                             else e["row_key"]})
+        with self.db:
+            cols = [c for c in self.cb.columns("studies") if c != "ID"]
+            self.db.execute("UPDATE studies SET " + ", ".join(f'"{c}" = ?' for c in cols)
+                            + " WHERE ID = ?", [str(study.get(c, "")) for c in cols] + [study_id])
+            marks = ", ".join("?" for _ in replaced + ["studies"])
+            self.db.execute(f'DELETE FROM evidence WHERE ID = ? AND "table" IN ({marks})',
+                            [study_id, *replaced, "studies"])
+            for name in replaced:
+                self.db.execute(f'DELETE FROM "{name}" WHERE ID = ?', (study_id,))
+            for name, add in [*rows.items(), ("evidence", evidence)]:
+                cols = self.cb.columns(name)
+                self.db.executemany(
+                    f'INSERT INTO "{name}" ({", ".join(chr(34) + c + chr(34) for c in cols)}) '
+                    f'VALUES ({", ".join("?" for _ in cols)})',
+                    [[str(r.get(c, "")) for c in cols] for r in add])
+            loose, doubled = self._breeds_of_gone_groups(study_id, used)
+        return {**{name: len(r) for name, r in rows.items()}, "evidence": len(evidence),
+                "groups_that_kept_their_id": sum(v in {r["arm_id"] for r in old} for v in used),
+                "breeds_set_to_the_whole_study": loose,
+                "breeds_already_there_for_the_whole_study": doubled, "sites_kept": keep_sites}
 
 
 def _read_folder(folder: Path) -> dict:

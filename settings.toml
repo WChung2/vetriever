@@ -14,9 +14,12 @@ screen = "low"        # benchmark 2026-11-03 on 120 records: "low" dropped 2 rel
 structure = "low"    # 3.8-flash doesn't think at "low"; "medium" tested 2026-11-02: 3x the cost,
                      # runaway thinking in the arms step (15-18k tokens), no more results found
 review = "medium"
+# optional, one step of reading a paper (study | arms | results | people): overrides structure
+# structure_study = "medium"
 
 [spending]
-cap_usd = 50.00         # hard stop for everything in corpus/spend.csv; raised per phase, with your OK
+cap_usd = 78.00         # hard stop for everything in corpus/spend.csv; raised per phase, with your OK
+                        # (50 -> 75 -> 78 on 2026-11-20 for the re-read of the IMHA studies)
 max_output_tokens = 16384
 # extraction answers are long (a results table can be 50 rows), and thinking counts too
 max_output_tokens_by_step = { structure = 32768 }

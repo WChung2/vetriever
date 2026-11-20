@@ -5,8 +5,9 @@ validate.py (duplicate_document). These are only suggestions:
 - possible_same_document: two documents with the same title and year;
 - duplicate_row: two rows of one study that are identical apart from their key;
 - possible_same_trial: studies in different documents that look like one trial reported
-  twice (e.g. a paper and the FDA summary of the same field study). Matching them for real,
-  with a person's confirmation, comes later; this list shows where to look.
+  twice (e.g. a paper and the FDA summary of the same field study). A person decides, in
+  study_links (same_experiment, shared_animals or distinct); a pair decided there is not
+  listed again.
 """
 import re
 from collections import defaultdict
@@ -96,9 +97,10 @@ def _same_trial(t: dict) -> list[Issue]:
             for word in p:
                 buckets["person", word].add(sid)
     pairs = {pair for ids in buckets.values() for pair in combinations(sorted(ids), 2)}
+    decided = {frozenset((r["ID"], r["linked_ID"])) for r in t.get("study_links", [])}
     out = []
     for a, b in sorted(pairs):
-        if primary.get(a) == primary.get(b):
+        if primary.get(a) == primary.get(b) or frozenset((a, b)) in decided:
             continue
         shared = drugs[a] & drugs[b]
         if not shared:

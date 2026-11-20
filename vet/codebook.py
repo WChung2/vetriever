@@ -14,7 +14,7 @@ from .settings import ROOT
 
 TABLES = ["sources", "study_sources", "studies", "study_topics", "topic_fields", "arms",
           "arm_doses", "results", "sites", "people", "breeds", "definitions", "conflicts",
-          "evidence"]
+          "study_links", "evidence"]
 KINDS = {"K": "key", "T": "transcribed", "C": "coded", "N": "note", "D": "derived"}
 TYPES = {"text", "integer", "number", "date", "year", "enum", "pipe_list", "criteria"}
 EVIDENCE = {"quote", "location", "none"}
@@ -206,6 +206,22 @@ list, such as a quote for each country); two identical evidence rows are a dupli
 ## Conflicts
 When two documents about one study, or two places in one document, give different values for
 the same cell, the table keeps the primary document's value and `conflicts` records both.
+
+## One experiment in several papers
+Each paper extracted on its own gives its own study rows, with its own outcomes and results.
+When two of them report one experiment (the same animals, groups and treatments: a paper and
+a sub-study of its samples, or a later report with longer follow-up), both rows stay and
+`study_links` joins them with `relation = same_experiment`: count them once. Animals that
+take part in two different experiments (a research colony used again, overlapping
+enrolment) are `shared_animals`: not independent. Both need a document's own words, checked
+against its text. `distinct` records that two look-alike studies were checked and are
+separate, so they are not flagged again.
+
+## Doses
+`dose_value` is the dose as prescribed or planned, or, when the document reports the doses
+the animals received as a summary (2.0 ± 0.1 mg/kg, a median and its range), that mean or
+median; `dose_statistic` says which. The spread, a taper or a weight band stays in
+`dose_as_written`. Any unit, as written: mg/kg, mg/m2, µg/kg/min, mg per dog, IU/kg.
 
 ## Working rules
 Each document is extracted alone, from its saved text `docs/<source_id>.txt`, into

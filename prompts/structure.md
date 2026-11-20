@@ -27,11 +27,13 @@ make one up.
 - Notes: your own words, short. Say why an expected field is empty or uncertain.
 - Numbers: digits, a dot and a leading minus only (-16.4); no units, thousands separators, ~
   or ≥. If the document gives only an approximate value or a range where one number is
-  expected, leave it empty and say so in notes.
+  expected, leave it empty and say so in notes, unless the field's rule says where each end
+  goes.
 - Dates: ISO, at the precision stated: YYYY, YYYY-MM or YYYY-MM-DD.
 - Lists: items separated by | with no spaces around it.
 - Eligibility Criteria: "Inclusion Criteria:", a blank line, one "* " line per criterion, a
-  blank line, then the same for "Exclusion Criteria:". Copy each criterion's words.
+  blank line, then the same for "Exclusion Criteria:". The field's rule says what one line
+  holds.
 
 ## Never
 - fill a gap from another document, from what you know about the drug or the study, or from
@@ -45,7 +47,8 @@ make one up.
 Each field in the form says which evidence it needs:
 - quote: the shortest passage, copied character for character from the document, that
   contains the value (at most 500 characters). Don't join pieces, fix spacing or drop words
-  in the middle. For a value in a table, quote the table row as it appears in the text.
+  in the middle. For a value in a table, quote the table row as it appears in the text. A
+  list of several items: one passage per item, joined by " … ".
 - location: where in the document the value is: a section heading, "Table 2", "Figure 1
   legend" or a page, as the document names it.
 - none: no evidence needed.
